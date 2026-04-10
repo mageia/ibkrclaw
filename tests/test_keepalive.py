@@ -33,6 +33,9 @@ def test_check_api_readiness_returns_true_and_disconnects_client():
         def connect(self):
             pass
 
+        def get_accounts(self):
+            return ["DU123456"]
+
         def disconnect(self):
             self.disconnect_called = True
 
