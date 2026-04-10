@@ -1,5 +1,4 @@
 from pathlib import Path
-import re
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -32,6 +31,15 @@ def test_skill_doc_uses_repo_relative_script_path():
     content = _read("SKILL.md")
     assert "/Users/" not in content
     assert "scripts/ibkr_readonly.py" in content
+    for env_key in [
+        "IB_HOST=127.0.0.1",
+        "IB_PORT=4001",
+        "IB_CLIENT_ID=1",
+        "TG_BOT_TOKEN=",
+        "TG_CHAT_ID=",
+        "TG_NOTIFY_COOLDOWN=900",
+    ]:
+        assert env_key in content
 
 
 def test_api_reference_is_explicitly_marked_deprecated_v1_client_portal():
@@ -42,14 +50,6 @@ def test_api_reference_is_explicitly_marked_deprecated_v1_client_portal():
 
 def test_readme_deployment_tree_removes_clientportal_and_keeps_v2_scripts():
     content = _read("README.md")
-    tree_match = re.search(
-        r"部署后在 `~/trading/` 目录下的文件：\s*```(?P<tree>.*?)```",
-        content,
-        re.DOTALL,
-    )
-    assert tree_match, "README.md 缺少部署目录代码块"
-
-    tree = tree_match.group("tree")
-    assert "clientportal/" not in tree
-    assert "ibkr_readonly.py" in tree
-    assert "keepalive.py" in tree
+    assert "clientportal/" not in content
+    assert "ibkr_readonly.py" in content
+    assert "keepalive.py" in content

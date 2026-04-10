@@ -69,7 +69,7 @@ bash scripts/setup.sh ~/trading
 从 IBKR 官网下载 **IB Gateway** (Stable channel)：
 https://www.interactivebrokers.com/en/trading/ibgateway-stable.php
 
-安装后启动，用 liusaibot 登录（需手机 2FA 确认）。
+安装后启动，用你的只读子账户登录（需手机 2FA 确认）。
 
 ### 3. 配置 IB Gateway API Settings
 
@@ -87,6 +87,9 @@ https://www.interactivebrokers.com/en/trading/ibgateway-stable.php
 IB_HOST=127.0.0.1
 IB_PORT=4001
 IB_CLIENT_ID=1
+TG_BOT_TOKEN=
+TG_CHAT_ID=
+TG_NOTIFY_COOLDOWN=900
 ```
 
 ### 5. 测试连接
