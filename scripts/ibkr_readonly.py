@@ -10,6 +10,7 @@ IBKR Read-Only Client - ib_insync 版本
 
 import os
 import math
+import sys
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -92,6 +93,11 @@ def get_primary_balance_amount(balance: Dict[str, List[Dict[str, Any]]], tag: st
         if amount is not None:
             return amount
     return 0.0
+
+
+def log_warning(context: str, error: Exception) -> None:
+    """统一将 warning 输出到 stderr"""
+    print(f"{context} 发生错误: {error}", file=sys.stderr)
 
 
 class IBKRReadOnlyClient:
@@ -198,8 +204,8 @@ class IBKRReadOnlyClient:
             qualified = self.ib.qualifyContracts(contract)
             if qualified:
                 return qualified[0]
-        except Exception:
-            pass
+        except Exception as err:
+            log_warning(f"search_symbol({symbol})", err)
         return None
 
     def get_quote(self, symbol: str) -> Optional[Quote]:
@@ -292,9 +298,8 @@ class IBKRReadOnlyClient:
                         low_52w = value
                     elif field_name == 'APTS10DAVG' or field_name == 'VOL10DAVG':
                         avg_volume = value
-        except Exception:
-            # fundamentalData 可能不可用（需要额外订阅）
-            pass
+        except Exception as err:
+            log_warning(f"get_fundamentals({symbol})", err)
 
         # 如果 fundamental data 不可用，用 ticker 数据补充
         try:
@@ -303,8 +308,8 @@ class IBKRReadOnlyClient:
                 high_52w = str(ticker.high)
             if low_52w == "N/A" and hasattr(ticker, 'low') and ticker.low:
                 low_52w = str(ticker.low)
-        except Exception:
-            pass
+        except Exception as err:
+            log_warning(f"get_fundamentals({symbol}) ticker fallback", err)
 
         return FundamentalData(
             conid=contract.conId,
@@ -393,22 +398,31 @@ class IBKRReadOnlyClient:
         IBKR News API 需要额外订阅，暂用免费源。
         """
         import requests
+        url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
+        headers = {"User-Agent": "Mozilla/5.0"}
         try:
-            url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
-            headers = {"User-Agent": "Mozilla/5.0"}
             r = requests.get(url, headers=headers, timeout=10)
-            if r.status_code == 200:
-                root = ET.fromstring(r.text)
-                news = []
-                for item in root.findall(".//item")[:limit]:
-                    title = item.find("title").text if item.find("title") is not None else ""
-                    pubDate = item.find("pubDate").text if item.find("pubDate") is not None else ""
-                    link = item.find("link").text if item.find("link") is not None else ""
-                    news.append({"title": title, "date": pubDate, "link": link})
-                return news
-        except Exception:
-            pass
-        return []
+        except Exception as err:
+            log_warning(f"get_company_news({symbol})", err)
+            return []
+
+        if r.status_code != 200:
+            log_warning(f"get_company_news({symbol})", RuntimeError(f"unexpected status {r.status_code}"))
+            return []
+
+        try:
+            root = ET.fromstring(r.text)
+        except Exception as err:
+            log_warning(f"get_company_news({symbol})", err)
+            return []
+
+        news = []
+        for item in root.findall(".//item")[:limit]:
+            title = item.find("title").text if item.find("title") is not None else ""
+            pubDate = item.find("pubDate").text if item.find("pubDate") is not None else ""
+            link = item.find("link").text if item.find("link") is not None else ""
+            news.append({"title": title, "date": pubDate, "link": link})
+        return news
 
 
 def format_currency(value: float) -> str:
