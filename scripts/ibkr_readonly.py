@@ -24,6 +24,8 @@ IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
 IB_PORT = int(os.getenv("IB_PORT", "4001"))
 IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "1"))
 MARKET_DATA_TYPE_DELAYED = 3
+RECONNECT_BASE_DELAY_SECONDS = 1
+RECONNECT_MAX_ATTEMPTS = 3
 
 
 @dataclass
@@ -117,15 +119,24 @@ class IBKRReadOnlyClient:
     def _setup_reconnect(self):
         """设置断线自动重连"""
         def on_disconnect():
-            print(f"[{datetime.now():%H:%M:%S}] ⚠️ IB Gateway 断线，5秒后重连...")
-            time.sleep(5)
-            try:
-                self._connect_gateway()
-                print(f"[{datetime.now():%H:%M:%S}] ✅ 重连成功")
-            except Exception as e:
-                print(f"[{datetime.now():%H:%M:%S}] ❌ 重连失败: {e}")
+            print(f"[{datetime.now():%H:%M:%S}] 开始自动重连")
+            if self._reconnect_with_backoff():
+                print(f"[{datetime.now():%H:%M:%S}] 重连成功")
+            else:
+                print(f"[{datetime.now():%H:%M:%S}] 已达到最大重试次数，停止自动重连")
 
         self.ib.disconnectedEvent += on_disconnect
+
+    def _reconnect_with_backoff(self) -> bool:
+        for attempt in range(1, RECONNECT_MAX_ATTEMPTS + 1):
+            delay = RECONNECT_BASE_DELAY_SECONDS * attempt
+            time.sleep(delay)
+            try:
+                self._connect_gateway()
+                return True
+            except Exception as exc:
+                print(f"[{datetime.now():%H:%M:%S}] 第 {attempt} 次重连失败: {exc}")
+        return False
 
     def _apply_market_data_type(self):
         self.ib.reqMarketDataType(MARKET_DATA_TYPE_DELAYED)
