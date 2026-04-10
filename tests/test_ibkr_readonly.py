@@ -1,8 +1,7 @@
 from importlib import util
 from pathlib import Path
 from types import SimpleNamespace
-import requests
-import requests
+import sys
 
 
 def _load_ibkr_module():
@@ -126,26 +125,30 @@ def _make_contract(symbol: str, conid: int = 1) -> SimpleNamespace:
     return SimpleNamespace(conId=conid, symbol=symbol, localSymbol=symbol, description=symbol)
 
 
+def _raise_runtime_error(message: str):
+    def _inner(*args, **kwargs):
+        raise RuntimeError(message)
+    return _inner
+
+
 def test_search_symbol_logs_contract_lookup_failure(monkeypatch, capsys):
     client, fake_ib = build_client(monkeypatch)
 
-    def raise_on_qualify(contract):
-        raise RuntimeError("qualification failed")
-
-    fake_ib.qualifyContracts = raise_on_qualify
+    fake_ib.qualifyContracts = _raise_runtime_error("qualification failed")
     capsys.readouterr()
 
     assert client.search_symbol("AAPL") is None
 
     captured = capsys.readouterr()
     assert "search_symbol(AAPL)" in captured.err
+    assert "qualification failed" in captured.err
 
 
 def test_get_fundamentals_logs_snapshot_failure_and_returns_partial_data(monkeypatch, capsys):
     client, fake_ib = build_client(monkeypatch)
     fake_contract = _make_contract("AAPL", conid=101)
     fake_ib.qualifyContracts = lambda contract: [fake_contract]
-    fake_ib.reqFundamentalData = lambda *_: (_ for _ in ()).throw(RuntimeError("snapshot failed"))
+    fake_ib.reqFundamentalData = _raise_runtime_error("snapshot failed")
     fake_ib.reqTickers = lambda contract: [SimpleNamespace(high=150, low=140)]
     capsys.readouterr()
 
@@ -157,70 +160,18 @@ def test_get_fundamentals_logs_snapshot_failure_and_returns_partial_data(monkeyp
 
     captured = capsys.readouterr()
     assert "get_fundamentals(AAPL)" in captured.err
+    assert "snapshot failed" in captured.err
 
 
 def test_get_company_news_logs_request_failure(monkeypatch, capsys):
     client, _ = build_client(monkeypatch)
 
-    def raise_requests(*args, **kwargs):
-        raise RuntimeError("network failure")
-
-    monkeypatch.setattr(requests, "get", raise_requests)
+    fake_requests = SimpleNamespace(get=_raise_runtime_error("network failure"))
+    monkeypatch.setitem(sys.modules, "requests", fake_requests)
     capsys.readouterr()
 
     assert client.get_company_news("LMND") == []
 
     captured = capsys.readouterr()
     assert "get_company_news(LMND)" in captured.err
-
-
-def _make_contract(symbol: str, conid: int = 1) -> SimpleNamespace:
-    return SimpleNamespace(conId=conid, symbol=symbol, localSymbol=symbol, description=symbol)
-
-
-def test_search_symbol_logs_contract_lookup_failure(monkeypatch, capsys):
-    client, fake_ib = build_client(monkeypatch)
-
-    def raise_on_qualify(contract):
-        raise RuntimeError("qualification failed")
-
-    fake_ib.qualifyContracts = raise_on_qualify
-    capsys.readouterr()
-
-    assert client.search_symbol("AAPL") is None
-
-    captured = capsys.readouterr()
-    assert "search_symbol(AAPL)" in captured.err
-
-
-def test_get_fundamentals_logs_snapshot_failure_and_returns_partial_data(monkeypatch, capsys):
-    client, fake_ib = build_client(monkeypatch)
-    fake_contract = _make_contract("AAPL", conid=101)
-    fake_ib.qualifyContracts = lambda contract: [fake_contract]
-    fake_ib.reqFundamentalData = lambda *_: (_ for _ in ()).throw(RuntimeError("snapshot failed"))
-    fake_ib.reqTickers = lambda contract: [SimpleNamespace(high=150, low=140)]
-    capsys.readouterr()
-
-    data = client.get_fundamentals("AAPL")
-
-    assert data is not None
-    assert data.high_52w == "150"
-    assert data.low_52w == "140"
-
-    captured = capsys.readouterr()
-    assert "get_fundamentals(AAPL)" in captured.err
-
-
-def test_get_company_news_logs_request_failure(monkeypatch, capsys):
-    client, _ = build_client(monkeypatch)
-
-    def raise_requests(*args, **kwargs):
-        raise RuntimeError("network failure")
-
-    monkeypatch.setattr(requests, "get", raise_requests)
-    capsys.readouterr()
-
-    assert client.get_company_news("LMND") == []
-
-    captured = capsys.readouterr()
-    assert "get_company_news(LMND)" in captured.err
+    assert "network failure" in captured.err
