@@ -1,17 +1,16 @@
-from types import SimpleNamespace
-import asyncio
-import os
-import sys
+from importlib import util
+from pathlib import Path
 
-import pytest
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+def _load_ibkr_module():
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "ibkr_readonly.py"
+    spec = util.spec_from_file_location("ibkr_readonly", script_path)
+    module = util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-asyncio.set_event_loop(asyncio.new_event_loop())
 
-import scripts.ibkr_readonly as ibkr_module
+ibkr_module = _load_ibkr_module()
 
 
 class FakeEvent(list):
