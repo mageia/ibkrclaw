@@ -25,28 +25,32 @@ class FakeEvent(list):
 
 
 class FakeIB:
-    def __init__(self):
+    def __init__(self, connect_outcomes=None):
         self.disconnectedEvent = FakeEvent()
         self.connect_calls = []
         self.market_data_types = []
         self.accountSummary = lambda: []
+        self._connect_outcomes = list(connect_outcomes or [])
 
     def connect(self, host, port, clientId, readonly=False):
-        self.connect_calls.append(
-            {
-                "host": host,
-                "port": port,
-                "clientId": clientId,
-                "readonly": readonly,
-            }
-        )
+        call_details = {
+            "host": host,
+            "port": port,
+            "clientId": clientId,
+            "readonly": readonly,
+        }
+        self.connect_calls.append(call_details)
+        if self._connect_outcomes:
+            outcome = self._connect_outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
 
     def reqMarketDataType(self, market_data_type):
         self.market_data_types.append(market_data_type)
 
 
-def build_client(monkeypatch):
-    fake_ib = FakeIB()
+def build_client(monkeypatch, connect_outcomes=None):
+    fake_ib = FakeIB(connect_outcomes=connect_outcomes)
     monkeypatch.setattr(ibkr_module, "IB", lambda: fake_ib)
     monkeypatch.setattr(ibkr_module.time, "sleep", lambda _: None)
     client = ibkr_module.IBKRReadOnlyClient(host="127.0.0.1", port=4001, client_id=7)
@@ -86,6 +90,62 @@ def test_disconnect_handler_reconnects_in_readonly_mode(monkeypatch, capsys):
     assert fake_ib.market_data_types == [ibkr_module.MARKET_DATA_TYPE_DELAYED]
     captured = capsys.readouterr()
     assert "重连成功" in captured.out
+
+
+def test_retries_with_backoff_until_success(monkeypatch, capsys):
+    sleep_calls = []
+    client, fake_ib = build_client(
+        monkeypatch,
+        connect_outcomes=[
+            RuntimeError("first failure"),
+            RuntimeError("second failure"),
+        ],
+    )
+    monkeypatch.setattr(ibkr_module.time, "sleep", sleep_calls.append)
+    reconnect_handler = fake_ib.disconnectedEvent[0]
+    capsys.readouterr()
+
+    reconnect_handler()
+
+    assert len(fake_ib.connect_calls) == 3
+    assert all(call["readonly"] for call in fake_ib.connect_calls)
+    base_delay = getattr(ibkr_module, "RECONNECT_BASE_DELAY_SECONDS", None)
+    assert base_delay is not None, "RECONNECT_BASE_DELAY_SECONDS is required for reconnect backoff"
+    assert sleep_calls == [
+        base_delay * i for i in range(1, 4)
+    ]
+    assert ibkr_module.MARKET_DATA_TYPE_DELAYED in fake_ib.market_data_types
+    captured = capsys.readouterr()
+    assert "第 1 次重连失败" in captured.out
+    assert "第 2 次重连失败" in captured.out
+    assert "重连成功" in captured.out
+
+
+def test_stops_after_max_attempts(monkeypatch, capsys):
+    max_attempts = getattr(ibkr_module, "RECONNECT_MAX_ATTEMPTS", None)
+    assert max_attempts is not None, "RECONNECT_MAX_ATTEMPTS is required for reconnect backoff"
+    base_delay = getattr(ibkr_module, "RECONNECT_BASE_DELAY_SECONDS", None)
+    assert base_delay is not None, "RECONNECT_BASE_DELAY_SECONDS is required for reconnect backoff"
+
+    client, fake_ib = build_client(
+        monkeypatch,
+        connect_outcomes=[RuntimeError("still-down")] * max_attempts,
+    )
+    reconnect_handler = fake_ib.disconnectedEvent[0]
+    capsys.readouterr()
+
+    sleep_calls = []
+    monkeypatch.setattr(ibkr_module.time, "sleep", sleep_calls.append)
+
+    reconnect_handler()
+
+    assert len(fake_ib.connect_calls) == max_attempts
+    assert sleep_calls == [
+        base_delay * i for i in range(1, max_attempts + 1)
+    ]
+    captured = capsys.readouterr()
+    assert "已达到最大重试次数" in captured.out
+    assert "still-down" in captured.out
 
 
 def _make_summary_item(tag: str, value: str, currency: str, account: str):
