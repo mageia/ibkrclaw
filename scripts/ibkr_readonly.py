@@ -22,6 +22,7 @@ from ib_insync import *
 IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
 IB_PORT = int(os.getenv("IB_PORT", "4001"))
 IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "1"))
+MARKET_DATA_TYPE_DELAYED = 3
 
 
 @dataclass
@@ -83,19 +84,24 @@ class IBKRReadOnlyClient:
             print(f"[{datetime.now():%H:%M:%S}] ⚠️ IB Gateway 断线，5秒后重连...")
             time.sleep(5)
             try:
-                self.ib.connect(self.host, self.port, clientId=self.client_id)
+                self._connect_gateway()
                 print(f"[{datetime.now():%H:%M:%S}] ✅ 重连成功")
             except Exception as e:
                 print(f"[{datetime.now():%H:%M:%S}] ❌ 重连失败: {e}")
 
         self.ib.disconnectedEvent += on_disconnect
 
+    def _apply_market_data_type(self):
+        self.ib.reqMarketDataType(MARKET_DATA_TYPE_DELAYED)
+
+    def _connect_gateway(self):
+        self.ib.connect(self.host, self.port, clientId=self.client_id, readonly=True)
+        self._apply_market_data_type()
+
     def connect(self) -> bool:
         """连接 IB Gateway"""
         try:
-            self.ib.connect(self.host, self.port, clientId=self.client_id)
-            # 使用延迟行情（免费），避免 "not subscribed" 错误
-            self.ib.reqMarketDataType(3)
+            self._connect_gateway()
             return True
         except Exception as e:
             print(f"❌ 连接失败: {e}")
