@@ -1,5 +1,7 @@
 # IBKR Client Portal API Reference
 
+> ⚠️ **已弃用 / Deprecated**：本文档仅保留为 **v1 Client Portal** 历史参考。当前实现已迁移至 **IB Gateway + ib_insync**，请勿将本文件作为 v2 运行指引。
+
 Base URL: `https://localhost:5000`
 
 All requests use HTTPS with self-signed certs (use `verify=False` or `-k` with curl).

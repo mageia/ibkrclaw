@@ -99,11 +99,9 @@ v1.0 (已弃用)                          v2.0 (当前)
 # 安装 Java（如已安装可跳过）
 brew install openjdk@17
 
-# 创建工作目录和 Python 环境
-mkdir -p ~/trading && cd ~/trading
-python3 -m venv venv
-source venv/bin/activate
-pip install ib_insync requests
+# 在仓库目录执行 v2 安装脚本
+cd ibkrclaw
+bash scripts/setup.sh ~/trading
 ```
 
 ### 第 2 步：安装 IB Gateway
@@ -144,6 +142,9 @@ https://www.interactivebrokers.com/en/trading/ibgateway-stable.php
 IB_HOST=127.0.0.1
 IB_PORT=4001
 IB_CLIENT_ID=1
+TG_BOT_TOKEN=
+TG_CHAT_ID=
+TG_NOTIFY_COOLDOWN=900
 ```
 
 ### 第 6 步：测试连接
@@ -186,11 +187,12 @@ IB Gateway 自带 **Auto Restart** 功能，勾选后每周日（或自定义时
 代码内置了断线自动重连逻辑，网络短暂中断后会自动恢复连接：
 
 ```python
-def on_disconnect():
+def on_disconnect(ib, host, port, client_id):
     time.sleep(5)
     ib.connect(host, port, clientId=client_id, readonly=True)
+    ib.reqMarketDataType(3)  # 延迟行情兜底
 
-ib.disconnectedEvent += on_disconnect
+ib.disconnectedEvent += lambda: on_disconnect(ib, host, port, client_id)
 ```
 
 ### 健康检查 + Telegram 通知
@@ -256,7 +258,7 @@ ibkr-trader/
     └── ...               # 参考文档
 ```
 
-**部署后在 `~/trading/` 目录下的文件：**
+部署后在 `~/trading/` 目录下的文件：
 
 ```
 ~/trading/
@@ -265,8 +267,7 @@ ibkr-trader/
 ├── keepalive.py          # 健康检查脚本副本
 ├── venv/                 # Python 虚拟环境（含 ib_insync）
 ├── keepalive.log         # 健康检查日志
-├── tws_reader.py         # TWS 连接测试脚本（参考用）
-└── clientportal/         # [已弃用] 旧版 Client Portal Gateway
+└── ...
 ```
 
 ---
@@ -290,7 +291,7 @@ ibkr-trader/
 - **账户层安全**：建议使用只读子账户，从 IBKR 层面杜绝交易权限（这是最根本的安全保障）
 - **代码层安全**：`IBKRReadOnlyClient` 类中没有任何写操作方法
 - **为什么不勾选 Read-Only API**：IB Gateway 的 Read-Only API 设置过于严格，会阻止历史持仓查询、Scanner 扫描等纯查询功能。安全性应通过账户权限控制，而非 API 层限制
-- **凭证安全**：`.env` 文件仅保存在本地，不会上传到任何服务器；v2.0 的 `.env` 只含端口配置，不再存储账号密码
+- **凭证安全**：`.env` 文件仅保存在本地，不会上传到任何服务器；v2.0 的 `.env` 仅包含本地连接参数与 Telegram 通知配置，不存储 IB 账号密码
 - 源代码完全开源，可自行审查
 - 即使有人要求下单，此 Skill **技术上无法执行**
 
