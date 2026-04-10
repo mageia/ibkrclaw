@@ -1,6 +1,8 @@
 import os
+import time
 from importlib import util
 from pathlib import Path
+from types import SimpleNamespace
 
 
 os.environ["IB_HOST"] = "127.0.0.1"
@@ -31,7 +33,7 @@ def test_check_api_readiness_returns_true_and_disconnects_client():
             self.disconnect_called = False
 
         def connect(self):
-            pass
+            return True
 
         def get_accounts(self):
             return ["DU123456"]
@@ -92,3 +94,71 @@ def test_main_sends_notification_when_state_changes_to_api_down(monkeypatch):
     assert recorded_states
     assert recorded_states[-1] == "api_down"
     assert any("API 不可用" in message for message in sent_messages)
+
+
+def test_build_readonly_client_uses_keepalive_client_id(monkeypatch):
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, host, port, client_id):
+            captured["host"] = host
+            captured["port"] = port
+            captured["client_id"] = client_id
+
+    class FakeLoader:
+        def exec_module(self, module):
+            module.IBKRReadOnlyClient = FakeClient
+
+    fake_spec = SimpleNamespace(loader=FakeLoader())
+    monkeypatch.setattr(keepalive.util, "spec_from_file_location", lambda *args, **kwargs: fake_spec)
+    monkeypatch.setattr(keepalive.util, "module_from_spec", lambda spec: SimpleNamespace())
+
+    client = keepalive.build_readonly_client()
+
+    assert isinstance(client, FakeClient)
+    assert captured["host"] == keepalive.IB_HOST
+    assert captured["port"] == keepalive.IB_PORT
+    assert captured["client_id"] == keepalive.KEEPALIVE_CLIENT_ID
+
+
+def test_check_api_readiness_uses_runtime_default_factory(monkeypatch):
+    called = {"value": False}
+
+    class FakeClient:
+        def connect(self):
+            return True
+
+        def get_accounts(self):
+            return ["DU123456"]
+
+        def disconnect(self):
+            pass
+
+    def fake_factory():
+        called["value"] = True
+        return FakeClient()
+
+    monkeypatch.setattr(keepalive, "build_readonly_client", fake_factory)
+
+    assert keepalive.check_api_readiness(timeout_seconds=0.1) is True
+    assert called["value"] is True
+
+
+def test_check_api_readiness_returns_false_when_api_check_times_out(capfd):
+    class SlowClient:
+        def connect(self):
+            return True
+
+        def get_accounts(self):
+            time.sleep(0.2)
+            return []
+
+        def disconnect(self):
+            pass
+
+    result = keepalive.check_api_readiness(lambda: SlowClient(), timeout_seconds=0.05)
+
+    assert result is False
+    captured = capfd.readouterr()
+    assert "API readiness check failed" in captured.out
+    assert "timed out" in captured.out

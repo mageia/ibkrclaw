@@ -10,15 +10,23 @@ Crontab entry:
 
 import os
 import sys
+import signal
 import socket
 import subprocess
 from importlib import util
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
 # IB Gateway 配置
 IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
 IB_PORT = int(os.getenv("IB_PORT", "4001"))
+DEFAULT_KEEPALIVE_CLIENT_ID = 91
+KEEPALIVE_CLIENT_ID = int(os.getenv("KEEPALIVE_CLIENT_ID", str(DEFAULT_KEEPALIVE_CLIENT_ID)))
+DEFAULT_API_READINESS_TIMEOUT_SECONDS = 8.0
+API_READINESS_TIMEOUT_SECONDS = float(
+    os.getenv("KEEPALIVE_API_TIMEOUT_SECONDS", str(DEFAULT_API_READINESS_TIMEOUT_SECONDS))
+)
 
 # Telegram 通知配置（可选）
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "")
@@ -66,18 +74,41 @@ def build_readonly_client():
 
     module = util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.IBKRReadOnlyClient(host=IB_HOST, port=IB_PORT)
+    return module.IBKRReadOnlyClient(host=IB_HOST, port=IB_PORT, client_id=KEEPALIVE_CLIENT_ID)
 
 
-def check_api_readiness(client_factory=build_readonly_client) -> bool:
+@contextmanager
+def api_readiness_timeout(timeout_seconds: float):
+    if timeout_seconds <= 0:
+        yield
+        return
+
+    def _timeout_handler(_signum, _frame):
+        raise TimeoutError(f"API readiness check timed out after {timeout_seconds}s")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
+def check_api_readiness(client_factory=None, timeout_seconds: float = API_READINESS_TIMEOUT_SECONDS) -> bool:
     """检查 API 可用性：连接并执行一次轻量查询"""
+    if client_factory is None:
+        client_factory = build_readonly_client
+
     client = None
     try:
-        client = client_factory()
-        connected = client.connect()
-        if connected is False:
-            raise RuntimeError("connect() returned False")
-        client.get_accounts()
+        with api_readiness_timeout(timeout_seconds):
+            client = client_factory()
+            connected = client.connect()
+            if connected is False:
+                raise RuntimeError("connect() returned False")
+            client.get_accounts()
         return True
     except Exception as e:
         log(f"⚠️ API readiness check failed: {e}")
