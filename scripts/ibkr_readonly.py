@@ -14,7 +14,7 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from dataclasses import dataclass
-from typing import Optional, List, Dict
+from typing import Any, Optional, List, Dict
 
 from ib_insync import *
 
@@ -62,6 +62,36 @@ class FundamentalData:
     high_52w: str
     low_52w: str
     avg_volume: str
+
+
+def parse_account_summary_value(value: Any) -> Optional[float]:
+    """尝试将余额项的 value 字符串转换为浮点数"""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    normalized = text.replace(",", "")
+    try:
+        return float(normalized)
+    except ValueError:
+        return None
+
+
+def get_primary_balance_amount(balance: Dict[str, List[Dict[str, Any]]], tag: str) -> float:
+    """返回某个 tag 下第一个可解析为数字的余额"""
+    entries = balance.get(tag, [])
+    for entry in entries:
+        amount = parse_account_summary_value(entry.get("amount"))
+        if amount is not None:
+            return amount
+    return 0.0
 
 
 class IBKRReadOnlyClient:
@@ -122,15 +152,18 @@ class IBKRReadOnlyClient:
         """获取账户列表"""
         return self.ib.managedAccounts()
 
-    def get_balance(self) -> dict:
+    def get_balance(self) -> Dict[str, List[Dict[str, Any]]]:
         """获取账户余额/总结"""
         summary = self.ib.accountSummary()
-        result = {}
+        result: Dict[str, List[Dict[str, Any]]] = {}
         for item in summary:
-            try:
-                result[item.tag] = {"amount": float(item.value), "currency": item.currency}
-            except (ValueError, TypeError):
-                result[item.tag] = {"amount": item.value, "currency": item.currency}
+            entries = result.setdefault(item.tag, [])
+            parsed_amount = parse_account_summary_value(item.value)
+            entries.append({
+                "amount": parsed_amount if parsed_amount is not None else item.value,
+                "currency": item.currency,
+                "account": getattr(item, "account", None),
+            })
         return result
 
     def get_positions(self) -> List[Position]:
@@ -416,8 +449,8 @@ def main():
         print(f"📊 账户: {', '.join(accounts)}")
 
     balance = client.get_balance()
-    cash = balance.get("TotalCashValue", {}).get("amount", 0)
-    net_liq = balance.get("NetLiquidation", {}).get("amount", 0)
+    cash = get_primary_balance_amount(balance, "TotalCashValue")
+    net_liq = get_primary_balance_amount(balance, "NetLiquidation")
     print(f"💵 现金余额: {format_currency(cash)}")
     print(f"💰 净资产: {format_currency(net_liq)}")
     print("-" * 50)
