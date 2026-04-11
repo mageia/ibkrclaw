@@ -343,6 +343,78 @@ def _order_snapshot_from_trade(trade: Any) -> OrderSnapshot:
     )
 
 
+def _order_snapshot_from_order(order: Any) -> OrderSnapshot:
+    contract = getattr(order, "contract", None)
+
+    symbol = None
+    sec_type = None
+    exchange = None
+    if contract is not None:
+        symbol = _normalize_optional_text(
+            getattr(contract, "localSymbol", None) or getattr(contract, "symbol", None)
+        )
+        sec_type = _normalize_optional_text(getattr(contract, "secType", None))
+        exchange = _normalize_optional_text(getattr(contract, "exchange", None))
+    else:
+        symbol = _normalize_optional_text(getattr(order, "symbol", None))
+        sec_type = _normalize_optional_text(getattr(order, "secType", None))
+        exchange = _normalize_optional_text(getattr(order, "exchange", None))
+
+    order_id = getattr(order, "orderId", None)
+    perm_id = getattr(order, "permId", None)
+    action = _normalize_optional_text(getattr(order, "action", None))
+    total_quantity = getattr(order, "totalQuantity", None)
+    order_type = _normalize_order_type(getattr(order, "orderType", None))
+    order_type = _normalize_optional_text(order_type)
+    limit_price = getattr(order, "lmtPrice", None)
+    stop_price = getattr(order, "auxPrice", None)
+    account = _normalize_optional_text(getattr(order, "account", None))
+
+    order_status = getattr(order, "orderStatus", None)
+    status = _normalize_optional_text(
+        getattr(order_status, "status", None) if order_status is not None else getattr(order, "status", None)
+    )
+    filled = (
+        getattr(order_status, "filled", None) if order_status is not None else getattr(order, "filled", None)
+    )
+    remaining = (
+        getattr(order_status, "remaining", None) if order_status is not None else getattr(order, "remaining", None)
+    )
+    avg_fill_price = (
+        getattr(order_status, "avgFillPrice", None)
+        if order_status is not None
+        else getattr(order, "avgFillPrice", None)
+    )
+    last_fill_price = (
+        getattr(order_status, "lastFillPrice", None)
+        if order_status is not None
+        else getattr(order, "lastFillPrice", None)
+    )
+    time_value = _normalize_optional_text(
+        getattr(order_status, "time", None) if order_status is not None else getattr(order, "time", None)
+    )
+
+    return OrderSnapshot(
+        order_id=order_id,
+        perm_id=perm_id,
+        symbol=symbol,
+        sec_type=sec_type,
+        action=action,
+        order_type=order_type,
+        total_quantity=total_quantity,
+        limit_price=limit_price,
+        stop_price=stop_price,
+        status=status,
+        filled=filled,
+        remaining=remaining,
+        avg_fill_price=avg_fill_price,
+        last_fill_price=last_fill_price,
+        exchange=exchange,
+        account=account,
+        time=time_value,
+    )
+
+
 def _fill_snapshot_from_fill(fill: Any) -> FillSnapshot:
     execution = getattr(fill, "execution", None)
     execution_id = _normalize_optional_text(
@@ -372,6 +444,15 @@ def _trade_snapshot_from_trade(trade: Any) -> TradeSnapshot:
         order=_order_snapshot_from_trade(trade),
         fills=[_fill_snapshot_from_fill(fill) for fill in fills],
     )
+
+
+def _clone_order(order: Any) -> Order:
+    if order is None:
+        raise ValueError("order is required")
+    cloned = Order()
+    for key, value in getattr(order, "__dict__", {}).items():
+        setattr(cloned, key, value)
+    return cloned
 
 
 def _qualify_existing_contract(ib: IB, contract: Contract) -> Contract:
@@ -814,3 +895,76 @@ class IBKRTradingClient:
         order = build_order(request)
         trade = self.ib.placeOrder(contract, order)
         return _trade_snapshot_from_trade(trade)
+
+    def _find_trade_by_order_id(self, order_id: int) -> Any:
+        trades = self.get_trades_raw()
+        for trade in trades:
+            order = getattr(trade, "order", None)
+            if order is None:
+                continue
+            if getattr(order, "orderId", None) == order_id:
+                return trade
+        raise ValueError(f"order_id {order_id} not found")
+
+    def cancel_order_raw(self, order_or_trade: Any) -> Any:
+        order = getattr(order_or_trade, "order", None) or order_or_trade
+        if order is None:
+            raise ValueError("order is required for cancel_order_raw")
+        self.ib.cancelOrder(order)
+        return order_or_trade
+
+    def cancel_order(self, order_id: int) -> TradeSnapshot:
+        trade = self._find_trade_by_order_id(order_id)
+        self.cancel_order_raw(trade)
+        return _trade_snapshot_from_trade(trade)
+
+    def modify_order_raw(self, trade: Any, request: ModifyOrderRequest) -> Any:
+        contract = getattr(trade, "contract", None)
+        if contract is None:
+            raise ValueError("trade contract is required for modify_order_raw")
+        order = getattr(trade, "order", None)
+        updated = _clone_order(order)
+
+        if request.quantity is not None:
+            updated.totalQuantity = request.quantity
+        if request.limit_price is not None:
+            updated.lmtPrice = request.limit_price
+        if request.stop_price is not None:
+            updated.auxPrice = request.stop_price
+        if request.tif is not None:
+            updated.tif = request.tif
+        if request.outside_rth is not None:
+            updated.outsideRth = request.outside_rth
+        if request.transmit is not None:
+            updated.transmit = request.transmit
+
+        return self.ib.placeOrder(contract, updated)
+
+    def modify_order(self, request: ModifyOrderRequest) -> TradeSnapshot:
+        trade = self._find_trade_by_order_id(request.order_id)
+        updated_trade = self.modify_order_raw(trade, request)
+        return _trade_snapshot_from_trade(updated_trade)
+
+    def get_open_orders_raw(self) -> List[Any]:
+        return self.ib.openOrders()
+
+    def get_orders_raw(self) -> List[Any]:
+        return self.ib.orders()
+
+    def get_trades_raw(self) -> List[Any]:
+        return self.ib.trades()
+
+    def get_fills_raw(self) -> List[Any]:
+        return self.ib.fills()
+
+    def get_open_orders(self) -> List[OrderSnapshot]:
+        return [_order_snapshot_from_order(order) for order in self.get_open_orders_raw()]
+
+    def get_orders(self) -> List[OrderSnapshot]:
+        return [_order_snapshot_from_order(order) for order in self.get_orders_raw()]
+
+    def get_trades(self) -> List[TradeSnapshot]:
+        return [_trade_snapshot_from_trade(trade) for trade in self.get_trades_raw()]
+
+    def get_fills(self) -> List[FillSnapshot]:
+        return [_fill_snapshot_from_fill(fill) for fill in self.get_fills_raw()]

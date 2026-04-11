@@ -699,3 +699,179 @@ def test_trade_snapshot_maps_fill_fields():
     assert recorded.price == 10.5
     assert recorded.quantity == 2
     assert recorded.exchange == "NYSE"
+
+
+def test_cancel_order_finds_trade_and_cancels(monkeypatch):
+    client, fake_ib = build_client(monkeypatch)
+    contract = _make_contract("AAPL", conid=9101)
+    order = SimpleNamespace(
+        orderId=501,
+        action="BUY",
+        orderType="LMT",
+        totalQuantity=2,
+        lmtPrice=10.5,
+    )
+    trade = _make_trade(contract, order, status="Submitted", filled=0, remaining=2)
+
+    fake_ib.trades = lambda: [trade]
+    fake_ib.cancel_order_calls = []
+
+    def _cancel(order_to_cancel):
+        fake_ib.cancel_order_calls.append(order_to_cancel)
+
+    fake_ib.cancelOrder = _cancel
+
+    snapshot = client.cancel_order(501)
+
+    assert fake_ib.cancel_order_calls == [order]
+    assert snapshot.order.order_id == 501
+    assert snapshot.order.symbol == "AAPL"
+    assert snapshot.order.status == "Submitted"
+
+
+def test_cancel_order_raises_when_not_found(monkeypatch):
+    client, fake_ib = build_client(monkeypatch)
+    fake_ib.trades = lambda: []
+
+    with pytest.raises(ValueError) as exc:
+        client.cancel_order(999)
+
+    assert "999" in str(exc.value)
+
+
+def test_cancel_order_raw_accepts_trade_or_order(monkeypatch):
+    client, fake_ib = build_client(monkeypatch)
+    contract = _make_contract("AAPL", conid=9201)
+    trade_order = SimpleNamespace(orderId=701)
+    trade = _make_trade(contract, trade_order, status="Submitted", filled=0, remaining=1)
+    solo_order = SimpleNamespace(orderId=702)
+
+    fake_ib.cancel_order_calls = []
+
+    def _cancel(order_to_cancel):
+        fake_ib.cancel_order_calls.append(order_to_cancel)
+
+    fake_ib.cancelOrder = _cancel
+
+    assert client.cancel_order_raw(trade) is trade
+    assert client.cancel_order_raw(solo_order) is solo_order
+    assert fake_ib.cancel_order_calls == [trade_order, solo_order]
+
+
+def test_modify_order_overrides_fields_and_resubmits(monkeypatch):
+    client, fake_ib = build_client(monkeypatch)
+    contract = _make_contract("AAPL", conid=9301)
+    original_order = SimpleNamespace(
+        orderId=801,
+        action="BUY",
+        orderType="LMT",
+        totalQuantity=1,
+        lmtPrice=10.0,
+        auxPrice=9.0,
+        tif="DAY",
+        outsideRth=False,
+        transmit=True,
+    )
+    trade = _make_trade(contract, original_order, status="Submitted", filled=0, remaining=1)
+    fake_ib.trades = lambda: [trade]
+
+    def _place_order(contract_arg, order_arg):
+        return _make_trade(contract_arg, order_arg, status="Submitted", filled=0, remaining=2)
+
+    fake_ib._place_order = _place_order
+
+    request = ibkr_module.ModifyOrderRequest(
+        order_id=801,
+        quantity=2,
+        limit_price=10.5,
+        stop_price=9.5,
+        tif="GTC",
+        outside_rth=True,
+        transmit=False,
+    )
+
+    snapshot = client.modify_order(request)
+
+    assert len(fake_ib.place_order_calls) == 1
+    placed_order = fake_ib.place_order_calls[0]["order"]
+    assert placed_order.orderId == 801
+    assert placed_order.totalQuantity == 2
+    assert placed_order.lmtPrice == 10.5
+    assert placed_order.auxPrice == 9.5
+    assert placed_order.tif == "GTC"
+    assert placed_order.outsideRth is True
+    assert placed_order.transmit is False
+    assert original_order.totalQuantity == 1
+    assert original_order.lmtPrice == 10.0
+    assert original_order.auxPrice == 9.0
+    assert original_order.tif == "DAY"
+    assert original_order.outsideRth is False
+    assert original_order.transmit is True
+    assert snapshot.order.order_id == 801
+    assert snapshot.order.total_quantity == 2
+
+
+def test_orders_and_trades_queries_return_snapshots(monkeypatch):
+    client, fake_ib = build_client(monkeypatch)
+    contract = _make_contract("AAPL", conid=9401)
+    order_status = SimpleNamespace(
+        status="Submitted",
+        filled=1,
+        remaining=4,
+        avgFillPrice=10.1,
+        lastFillPrice=10.2,
+        time="2024-01-03 09:31:00",
+    )
+    open_order = SimpleNamespace(
+        orderId=901,
+        permId=7001,
+        action="SELL",
+        orderType="LMT",
+        totalQuantity=5,
+        lmtPrice=10.5,
+        auxPrice=None,
+        account="DU123",
+        orderStatus=order_status,
+        contract=contract,
+    )
+    order = SimpleNamespace(
+        orderId=902,
+        permId=7002,
+        action="BUY",
+        orderType="MKT",
+        totalQuantity=3,
+        lmtPrice=None,
+        auxPrice=None,
+        account="DU124",
+        orderStatus=order_status,
+        contract=contract,
+    )
+    trade_order = SimpleNamespace(orderId=903, action="BUY", orderType="LMT", totalQuantity=2)
+    trade = _make_trade(contract, trade_order, status="Submitted", filled=0, remaining=2)
+    fill = SimpleNamespace(
+        execution=SimpleNamespace(
+            execId="EXEC-2",
+            time="2024-01-03 10:00:00",
+            price=10.3,
+            shares=1,
+            exchange="NASDAQ",
+        )
+    )
+
+    fake_ib.openOrders = lambda: [open_order]
+    fake_ib.orders = lambda: [order]
+    fake_ib.trades = lambda: [trade]
+    fake_ib.fills = lambda: [fill]
+
+    open_orders = client.get_open_orders()
+    orders = client.get_orders()
+    trades = client.get_trades()
+    fills = client.get_fills()
+
+    assert open_orders[0].order_id == 901
+    assert open_orders[0].symbol == "AAPL"
+    assert open_orders[0].status == "Submitted"
+    assert orders[0].order_id == 902
+    assert orders[0].action == "BUY"
+    assert trades[0].order.order_id == 903
+    assert fills[0].execution_id == "EXEC-2"
