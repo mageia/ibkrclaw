@@ -167,12 +167,20 @@ def _raise_runtime_error(message: str):
     return _inner
 
 
-def _make_contract(symbol: str, conid: int = 1) -> SimpleNamespace:
+def _make_contract(
+    symbol: str,
+    conid: int = 1,
+    *,
+    sec_type: str = "STK",
+    exchange: str = "SMART",
+) -> SimpleNamespace:
     return SimpleNamespace(
         conId=conid,
         symbol=symbol,
         localSymbol=symbol,
         description=symbol,
+        secType=sec_type,
+        exchange=exchange,
     )
 
 
@@ -583,7 +591,12 @@ def test_place_order_raw_qualifies_contract_then_places(monkeypatch):
     order = ibkr_module.build_order(order_request)
 
     qualified_contract = _make_contract("AAPL", conid=9001)
-    fake_ib.qualifyContracts = lambda c: [fake_ib.qualify_contract_inputs.append(c) or qualified_contract]
+
+    def _qualify(contract):
+        fake_ib.qualify_contract_inputs.append(contract)
+        return [qualified_contract]
+
+    fake_ib.qualifyContracts = _qualify
     trade = _make_trade(qualified_contract, order, remaining=2)
     fake_ib._place_order = lambda _, __: trade
 
@@ -632,3 +645,57 @@ def test_place_order_returns_trade_snapshot(monkeypatch):
     assert snapshot.order.remaining == 2
     assert snapshot.order.exchange == "SMART"
     assert snapshot.order.account == "DU123"
+
+
+def test_trade_snapshot_keeps_missing_fields_as_none():
+    trade = SimpleNamespace(
+        contract=SimpleNamespace(),
+        order=SimpleNamespace(),
+        orderStatus=SimpleNamespace(),
+        fills=None,
+    )
+
+    snapshot = ibkr_module._trade_snapshot_from_trade(trade)
+
+    assert snapshot.order.symbol is None
+    assert snapshot.order.sec_type is None
+    assert snapshot.order.action is None
+    assert snapshot.order.order_type is None
+    assert snapshot.order.total_quantity is None
+    assert snapshot.order.limit_price is None
+    assert snapshot.order.stop_price is None
+    assert snapshot.order.status is None
+    assert snapshot.order.filled is None
+    assert snapshot.order.remaining is None
+    assert snapshot.order.avg_fill_price is None
+    assert snapshot.order.last_fill_price is None
+    assert snapshot.order.exchange is None
+    assert snapshot.order.account is None
+
+
+def test_trade_snapshot_maps_fill_fields():
+    fill = SimpleNamespace(
+        execution=SimpleNamespace(
+            execId="EXEC-1",
+            time="2024-01-03 09:30:00",
+            price=10.5,
+            shares=2,
+            exchange="NYSE",
+        )
+    )
+    trade = SimpleNamespace(
+        contract=_make_contract("AAPL", conid=9001),
+        order=SimpleNamespace(),
+        orderStatus=SimpleNamespace(),
+        fills=[fill],
+    )
+
+    snapshot = ibkr_module._trade_snapshot_from_trade(trade)
+
+    assert len(snapshot.fills) == 1
+    recorded = snapshot.fills[0]
+    assert recorded.execution_id == "EXEC-1"
+    assert recorded.time == "2024-01-03 09:30:00"
+    assert recorded.price == 10.5
+    assert recorded.quantity == 2
+    assert recorded.exchange == "NYSE"

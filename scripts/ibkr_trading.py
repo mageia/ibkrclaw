@@ -116,19 +116,19 @@ class ModifyOrderRequest:
 class OrderSnapshot:
     order_id: Optional[int]
     perm_id: Optional[int]
-    symbol: str
-    sec_type: str
-    action: str
-    order_type: str
-    total_quantity: float
+    symbol: Optional[str]
+    sec_type: Optional[str]
+    action: Optional[str]
+    order_type: Optional[str]
+    total_quantity: Optional[float]
     limit_price: Optional[float]
     stop_price: Optional[float]
-    status: str
-    filled: float
-    remaining: float
-    avg_fill_price: float
-    last_fill_price: float
-    exchange: str
+    status: Optional[str]
+    filled: Optional[float]
+    remaining: Optional[float]
+    avg_fill_price: Optional[float]
+    last_fill_price: Optional[float]
+    exchange: Optional[str]
     account: Optional[str]
     time: Optional[str]
 
@@ -271,37 +271,56 @@ def _normalize_order_type(order_type: Optional[str]) -> str:
     return normalized
 
 
+def _normalize_optional_text(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
 def _order_snapshot_from_trade(trade: Any) -> OrderSnapshot:
     contract = getattr(trade, "contract", None)
     order = getattr(trade, "order", None)
     order_status = getattr(trade, "orderStatus", None)
 
-    symbol = ""
-    sec_type = ""
-    exchange = ""
+    symbol = None
+    sec_type = None
+    exchange = None
     if contract is not None:
-        symbol = getattr(contract, "localSymbol", None) or getattr(contract, "symbol", "") or ""
-        sec_type = getattr(contract, "secType", None) or "STK"
-        exchange = getattr(contract, "exchange", None) or ""
-
-    if not exchange and sec_type == "STK":
-        exchange = DEFAULT_STOCK_EXCHANGE
+        symbol = _normalize_optional_text(
+            getattr(contract, "localSymbol", None) or getattr(contract, "symbol", None)
+        )
+        sec_type = _normalize_optional_text(getattr(contract, "secType", None))
+        exchange = _normalize_optional_text(getattr(contract, "exchange", None))
 
     order_id = getattr(order, "orderId", None)
     perm_id = getattr(order, "permId", None)
-    action = getattr(order, "action", "") if order is not None else ""
-    total_quantity = getattr(order, "totalQuantity", 0) if order is not None else 0
-    order_type = _normalize_order_type(getattr(order, "orderType", None) if order is not None else None)
+    action = _normalize_optional_text(getattr(order, "action", None) if order is not None else None)
+    total_quantity = getattr(order, "totalQuantity", None) if order is not None else None
+    order_type = _normalize_order_type(
+        getattr(order, "orderType", None) if order is not None else None
+    )
+    order_type = _normalize_optional_text(order_type)
     limit_price = getattr(order, "lmtPrice", None) if order is not None else None
     stop_price = getattr(order, "auxPrice", None) if order is not None else None
-    account = getattr(order, "account", None) if order is not None else None
+    account = _normalize_optional_text(
+        getattr(order, "account", None) if order is not None else None
+    )
 
-    status = getattr(order_status, "status", "") if order_status is not None else ""
-    filled = getattr(order_status, "filled", 0) if order_status is not None else 0
-    remaining = getattr(order_status, "remaining", 0) if order_status is not None else 0
-    avg_fill_price = getattr(order_status, "avgFillPrice", 0) if order_status is not None else 0
-    last_fill_price = getattr(order_status, "lastFillPrice", 0) if order_status is not None else 0
-    time_value = getattr(order_status, "time", None) if order_status is not None else None
+    status = _normalize_optional_text(
+        getattr(order_status, "status", None) if order_status is not None else None
+    )
+    filled = getattr(order_status, "filled", None) if order_status is not None else None
+    remaining = getattr(order_status, "remaining", None) if order_status is not None else None
+    avg_fill_price = (
+        getattr(order_status, "avgFillPrice", None) if order_status is not None else None
+    )
+    last_fill_price = (
+        getattr(order_status, "lastFillPrice", None) if order_status is not None else None
+    )
+    time_value = _normalize_optional_text(
+        getattr(order_status, "time", None) if order_status is not None else None
+    )
 
     return OrderSnapshot(
         order_id=order_id,
@@ -326,11 +345,17 @@ def _order_snapshot_from_trade(trade: Any) -> OrderSnapshot:
 
 def _fill_snapshot_from_fill(fill: Any) -> FillSnapshot:
     execution = getattr(fill, "execution", None)
-    execution_id = getattr(execution, "execId", None) if execution is not None else None
-    time_value = getattr(execution, "time", None) if execution is not None else None
+    execution_id = _normalize_optional_text(
+        getattr(execution, "execId", None) if execution is not None else None
+    )
+    time_value = _normalize_optional_text(
+        getattr(execution, "time", None) if execution is not None else None
+    )
     price = getattr(execution, "price", None) if execution is not None else None
     quantity = getattr(execution, "shares", None) if execution is not None else None
-    exchange = getattr(execution, "exchange", None) if execution is not None else None
+    exchange = _normalize_optional_text(
+        getattr(execution, "exchange", None) if execution is not None else None
+    )
 
     return FillSnapshot(
         execution_id=execution_id,
@@ -352,7 +377,7 @@ def _trade_snapshot_from_trade(trade: Any) -> TradeSnapshot:
 def _qualify_existing_contract(ib: IB, contract: Contract) -> Contract:
     qualified = ib.qualifyContracts(contract)
     if not qualified:
-        raise ValueError("qualify_contract returned empty result for contract")
+        raise ValueError("qualifyContracts returned empty result for contract")
     return qualified[0]
 
 
