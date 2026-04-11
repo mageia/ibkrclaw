@@ -24,6 +24,10 @@ IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
 IB_PORT = int(os.getenv("IB_PORT", "4001"))
 IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "1"))
 MARKET_DATA_TYPE_DELAYED = 3
+RECONNECT_BASE_DELAY_SECONDS = 1
+RECONNECT_MAX_ATTEMPTS = 3
+DEFAULT_STOCK_EXCHANGE = "SMART"
+DEFAULT_STOCK_CURRENCY = "USD"
 
 
 @dataclass
@@ -100,6 +104,22 @@ def log_warning(context: str, error: Exception) -> None:
     print(f"{context} 发生错误: {error}", file=sys.stderr)
 
 
+def build_stock_contract(
+    symbol: str,
+    *,
+    exchange: str = DEFAULT_STOCK_EXCHANGE,
+    currency: str = DEFAULT_STOCK_CURRENCY,
+    primary_exchange: Optional[str] = None,
+) -> Contract:
+    """构造标准股票合约，支持可选的 primary exchange"""
+    contract = Stock(symbol, exchange, currency)
+    if primary_exchange:
+        normalized_primary = primary_exchange.strip()
+        if normalized_primary:
+            contract.primaryExchange = normalized_primary
+    return contract
+
+
 class IBKRReadOnlyClient:
     """
     IBKR 只读客户端 - ib_insync 版
@@ -117,15 +137,24 @@ class IBKRReadOnlyClient:
     def _setup_reconnect(self):
         """设置断线自动重连"""
         def on_disconnect():
-            print(f"[{datetime.now():%H:%M:%S}] ⚠️ IB Gateway 断线，5秒后重连...")
-            time.sleep(5)
-            try:
-                self._connect_gateway()
-                print(f"[{datetime.now():%H:%M:%S}] ✅ 重连成功")
-            except Exception as e:
-                print(f"[{datetime.now():%H:%M:%S}] ❌ 重连失败: {e}")
+            print(f"[{datetime.now():%H:%M:%S}] 开始自动重连")
+            if self._reconnect_with_backoff():
+                print(f"[{datetime.now():%H:%M:%S}] 重连成功")
+            else:
+                print(f"[{datetime.now():%H:%M:%S}] 已达到最大重试次数，停止自动重连")
 
         self.ib.disconnectedEvent += on_disconnect
+
+    def _reconnect_with_backoff(self) -> bool:
+        for attempt in range(1, RECONNECT_MAX_ATTEMPTS + 1):
+            delay = RECONNECT_BASE_DELAY_SECONDS * attempt
+            time.sleep(delay)
+            try:
+                self._connect_gateway()
+                return True
+            except Exception as exc:
+                print(f"[{datetime.now():%H:%M:%S}] 第 {attempt} 次重连失败: {exc}")
+        return False
 
     def _apply_market_data_type(self):
         self.ib.reqMarketDataType(MARKET_DATA_TYPE_DELAYED)
@@ -197,9 +226,21 @@ class IBKRReadOnlyClient:
             ))
         return positions
 
-    def search_symbol(self, symbol: str) -> Optional[Contract]:
+    def search_symbol(
+        self,
+        symbol: str,
+        *,
+        exchange: str = DEFAULT_STOCK_EXCHANGE,
+        currency: str = DEFAULT_STOCK_CURRENCY,
+        primary_exchange: Optional[str] = None,
+    ) -> Optional[Contract]:
         """搜索股票代码，返回 qualified Contract"""
-        contract = Stock(symbol, 'SMART', 'USD')
+        contract = build_stock_contract(
+            symbol,
+            exchange=exchange,
+            currency=currency,
+            primary_exchange=primary_exchange,
+        )
         try:
             qualified = self.ib.qualifyContracts(contract)
             if qualified:
@@ -438,6 +479,30 @@ def format_pnl(value: float, pct: float) -> str:
     return f"{sign} {color_value} ({pct:+.2f}%)"
 
 
+def format_balance_details(balance: Dict[str, List[Dict[str, Any]]]) -> List[str]:
+    """根据余额详情构造 CLI 展示行"""
+    lines: List[str] = []
+    for tag in ("TotalCashValue", "NetLiquidation"):
+        entries = balance.get(tag) or []
+        for entry in entries:
+            amount_value = entry.get("amount")
+            parsed_amount = parse_account_summary_value(amount_value)
+            if parsed_amount is not None:
+                display_amount = format_currency(parsed_amount)
+            else:
+                display_amount = str(amount_value)
+
+            account = entry.get("account")
+            currency = entry.get("currency")
+            account_display = "" if account is None else str(account)
+            currency_display = "" if currency is None else str(currency)
+
+            lines.append(
+                f"   {tag} | {account_display} | {currency_display}: {display_amount}"
+            )
+    return lines
+
+
 def main():
     """主函数 - 展示账户信息"""
     print("🏦 IBKR 投研辅助与只读查询工具 (ib_insync)")
@@ -467,6 +532,11 @@ def main():
     net_liq = get_primary_balance_amount(balance, "NetLiquidation")
     print(f"💵 现金余额: {format_currency(cash)}")
     print(f"💰 净资产: {format_currency(net_liq)}")
+    detail_lines = format_balance_details(balance)
+    if detail_lines:
+        print("💼 余额明细:")
+        for line in detail_lines:
+            print(line)
     print("-" * 50)
 
     # 持仓

@@ -25,28 +25,37 @@ class FakeEvent(list):
 
 
 class FakeIB:
-    def __init__(self):
+    def __init__(self, connect_outcomes=None):
         self.disconnectedEvent = FakeEvent()
         self.connect_calls = []
         self.market_data_types = []
         self.accountSummary = lambda: []
+        self._connect_outcomes = list(connect_outcomes or [])
+        self.qualify_contract_inputs = []
 
     def connect(self, host, port, clientId, readonly=False):
-        self.connect_calls.append(
-            {
-                "host": host,
-                "port": port,
-                "clientId": clientId,
-                "readonly": readonly,
-            }
-        )
+        call_details = {
+            "host": host,
+            "port": port,
+            "clientId": clientId,
+            "readonly": readonly,
+        }
+        self.connect_calls.append(call_details)
+        if self._connect_outcomes:
+            outcome = self._connect_outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
 
     def reqMarketDataType(self, market_data_type):
         self.market_data_types.append(market_data_type)
 
+    def qualifyContracts(self, contract):
+        self.qualify_contract_inputs.append(contract)
+        return [contract]
 
-def build_client(monkeypatch):
-    fake_ib = FakeIB()
+
+def build_client(monkeypatch, connect_outcomes=None):
+    fake_ib = FakeIB(connect_outcomes=connect_outcomes)
     monkeypatch.setattr(ibkr_module, "IB", lambda: fake_ib)
     monkeypatch.setattr(ibkr_module.time, "sleep", lambda _: None)
     client = ibkr_module.IBKRReadOnlyClient(host="127.0.0.1", port=4001, client_id=7)
@@ -86,6 +95,62 @@ def test_disconnect_handler_reconnects_in_readonly_mode(monkeypatch, capsys):
     assert fake_ib.market_data_types == [ibkr_module.MARKET_DATA_TYPE_DELAYED]
     captured = capsys.readouterr()
     assert "重连成功" in captured.out
+
+
+def test_retries_with_backoff_until_success(monkeypatch, capsys):
+    sleep_calls = []
+    client, fake_ib = build_client(
+        monkeypatch,
+        connect_outcomes=[
+            RuntimeError("first failure"),
+            RuntimeError("second failure"),
+        ],
+    )
+    monkeypatch.setattr(ibkr_module.time, "sleep", sleep_calls.append)
+    reconnect_handler = fake_ib.disconnectedEvent[0]
+    capsys.readouterr()
+
+    reconnect_handler()
+
+    assert len(fake_ib.connect_calls) == 3
+    assert all(call["readonly"] for call in fake_ib.connect_calls)
+    base_delay = getattr(ibkr_module, "RECONNECT_BASE_DELAY_SECONDS", None)
+    assert base_delay is not None, "RECONNECT_BASE_DELAY_SECONDS is required for reconnect backoff"
+    assert sleep_calls == [
+        base_delay * i for i in range(1, 4)
+    ]
+    assert ibkr_module.MARKET_DATA_TYPE_DELAYED in fake_ib.market_data_types
+    captured = capsys.readouterr()
+    assert "第 1 次重连失败" in captured.out
+    assert "第 2 次重连失败" in captured.out
+    assert "重连成功" in captured.out
+
+
+def test_stops_after_max_attempts(monkeypatch, capsys):
+    max_attempts = getattr(ibkr_module, "RECONNECT_MAX_ATTEMPTS", None)
+    assert max_attempts is not None, "RECONNECT_MAX_ATTEMPTS is required for reconnect backoff"
+    base_delay = getattr(ibkr_module, "RECONNECT_BASE_DELAY_SECONDS", None)
+    assert base_delay is not None, "RECONNECT_BASE_DELAY_SECONDS is required for reconnect backoff"
+
+    client, fake_ib = build_client(
+        monkeypatch,
+        connect_outcomes=[RuntimeError("still-down")] * max_attempts,
+    )
+    reconnect_handler = fake_ib.disconnectedEvent[0]
+    capsys.readouterr()
+
+    sleep_calls = []
+    monkeypatch.setattr(ibkr_module.time, "sleep", sleep_calls.append)
+
+    reconnect_handler()
+
+    assert len(fake_ib.connect_calls) == max_attempts
+    assert sleep_calls == [
+        base_delay * i for i in range(1, max_attempts + 1)
+    ]
+    captured = capsys.readouterr()
+    assert "已达到最大重试次数" in captured.out
+    assert "still-down" in captured.out
 
 
 def _make_summary_item(tag: str, value: str, currency: str, account: str):
@@ -144,6 +209,50 @@ def test_search_symbol_logs_contract_lookup_failure(monkeypatch, capsys):
     assert "qualification failed" in captured.err
 
 
+def test_search_symbol_keeps_default_smart_usd_contract(monkeypatch):
+    client, fake_ib = build_client(monkeypatch)
+
+    contract = client.search_symbol("AAPL")
+
+    assert contract is not None
+    assert fake_ib.qualify_contract_inputs, "search_symbol should qualify at least one contract"
+    recorded = next(
+        (c for c in fake_ib.qualify_contract_inputs if c.symbol == "AAPL"),
+        None,
+    )
+    assert recorded is not None
+
+    assert recorded.symbol == "AAPL"
+    assert recorded.exchange == "SMART"
+    assert recorded.currency == "USD"
+    primary_exchange = getattr(recorded, "primaryExchange", None)
+    assert primary_exchange in ("", None)
+
+
+def test_search_symbol_accepts_exchange_currency_and_primary_exchange(monkeypatch):
+    client, fake_ib = build_client(monkeypatch)
+
+    contract = client.search_symbol(
+        "700",
+        exchange="SEHK",
+        currency="HKD",
+        primary_exchange="SEHK",
+    )
+    assert contract is not None
+
+    assert fake_ib.qualify_contract_inputs, "search_symbol should forward new contract configuration parameters"
+    recorded = next(
+        (c for c in fake_ib.qualify_contract_inputs if c.symbol == "700"),
+        None,
+    )
+    assert recorded is not None
+
+    assert recorded.symbol == "700"
+    assert recorded.exchange == "SEHK"
+    assert recorded.currency == "HKD"
+    assert recorded.primaryExchange == "SEHK"
+
+
 def test_get_fundamentals_logs_snapshot_failure_and_returns_partial_data(monkeypatch, capsys):
     client, fake_ib = build_client(monkeypatch)
     fake_contract = _make_contract("AAPL", conid=101)
@@ -175,3 +284,27 @@ def test_get_company_news_logs_request_failure(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "get_company_news(LMND)" in captured.err
     assert "network failure" in captured.err
+
+
+def test_format_balance_details_outputs_account_currency_lines():
+    balance = {
+        "TotalCashValue": [
+            {"amount": 100, "currency": "USD", "account": "ACC-1"},
+            {"amount": 800, "currency": "HKD", "account": "ACC-1"},
+        ],
+        "NetLiquidation": [
+            {"amount": 1200, "currency": "USD", "account": "ACC-2"},
+        ],
+    }
+
+    formatted = ibkr_module.format_balance_details(balance)
+
+    assert formatted == [
+        "   TotalCashValue | ACC-1 | USD: $100.00",
+        "   TotalCashValue | ACC-1 | HKD: $800.00",
+        "   NetLiquidation | ACC-2 | USD: $1,200.00",
+    ]
+
+
+def test_format_balance_details_returns_empty_list_when_no_entries():
+    assert ibkr_module.format_balance_details({}) == []
