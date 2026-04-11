@@ -135,4 +135,4 @@ ib_insync_stub.__all__ = [
     "util",
 ]
 
-sys.modules.setdefault("ib_insync", ib_insync_stub)
+sys.modules["ib_insync"] = ib_insync_stub

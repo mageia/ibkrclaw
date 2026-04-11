@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Callable
 
-from ib_insync import *
+from ib_insync import IB, Stock, Contract
 
 # Configuration
 IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
@@ -141,6 +141,7 @@ class IBKRTradingClient:
             else:
                 print(f"[{time.strftime('%H:%M:%S')}] 已达到最大重试次数，停止自动重连")
 
+        self._disconnect_handler = on_disconnect
         self.ib.disconnectedEvent += on_disconnect
 
     def _reconnect_with_backoff(self) -> bool:
@@ -173,8 +174,17 @@ class IBKRTradingClient:
     def disconnect(self) -> None:
         """断开连接"""
         if self.ib.isConnected():
-            self.ib.disconnectedEvent.clear()
+            self._remove_disconnect_handler()
             self.ib.disconnect()
+
+    def _remove_disconnect_handler(self) -> None:
+        handler = getattr(self, "_disconnect_handler", None)
+        if handler is None:
+            return
+        try:
+            self.ib.disconnectedEvent.remove(handler)
+        except ValueError:
+            return
 
     def get_balance(self) -> Dict[str, List[Dict[str, Any]]]:
         """获取账户余额/总结"""
