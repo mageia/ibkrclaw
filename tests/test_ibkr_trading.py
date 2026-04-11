@@ -237,6 +237,20 @@ def test_get_quote_uses_snapshot_data(monkeypatch):
     assert fake_ib.req_tickers_calls == [contract]
 
 
+def test_get_quote_logs_unexpected_ticker_count(monkeypatch, capsys):
+    client, fake_ib = build_client(monkeypatch)
+    contract = _make_contract("AAPL", conid=211)
+    fake_ib.qualifyContracts = lambda _: [contract]
+    fake_ib._req_tickers = lambda contract: []
+    capsys.readouterr()
+
+    assert client.get_quote("AAPL") is None
+
+    captured = capsys.readouterr()
+    assert "get_quote(AAPL)" in captured.err
+    assert "unexpected ticker count" in captured.err
+
+
 def test_get_fundamentals_logs_snapshot_failure_and_returns_partial_data(monkeypatch, capsys):
     client, fake_ib = build_client(monkeypatch)
     fake_contract = _make_contract("AAPL", conid=303)
@@ -326,3 +340,23 @@ def test_get_company_news_logs_request_failure(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "get_company_news(LMND)" in captured.err
     assert "network failure" in captured.err
+
+
+def test_get_company_news_rejects_oversized_response(monkeypatch, capsys):
+    client, _ = build_client(monkeypatch)
+    max_bytes = ibkr_module.NEWS_MAX_RESPONSE_BYTES
+    oversized_text = "x" * (max_bytes + 1)
+    fake_response = SimpleNamespace(
+        status_code=200,
+        text=oversized_text,
+        content=oversized_text.encode("utf-8"),
+    )
+    fake_requests = SimpleNamespace(get=lambda *args, **kwargs: fake_response)
+    monkeypatch.setitem(ibkr_module.sys.modules, "requests", fake_requests)
+    capsys.readouterr()
+
+    assert client.get_company_news("LMND") == []
+
+    captured = capsys.readouterr()
+    assert "get_company_news(LMND)" in captured.err
+    assert "response too large" in captured.err

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 IBKR Trading Client - ib_insync 版本
-基础交易连接能力与账户信息读取。
+提供交易连接能力，并包含持仓/行情/基本面/历史数据等只读查询能力。
 """
 
 import math
@@ -24,6 +24,9 @@ RECONNECT_MAX_ATTEMPTS = 3
 DEFAULT_STOCK_EXCHANGE = "SMART"
 DEFAULT_STOCK_CURRENCY = "USD"
 SCANNER_MARKET_CAP_ABOVE = "100000000"
+NEWS_REQUEST_TIMEOUT_SECONDS = 10
+NEWS_USER_AGENT = "Mozilla/5.0"
+NEWS_MAX_RESPONSE_BYTES = 1_000_000
 
 
 @dataclass
@@ -130,7 +133,7 @@ def build_stock_contract(
 class IBKRTradingClient:
     """
     IBKR 交易客户端 - ib_insync 版
-    只包含连接/断线重连/余额/股票查询等基础能力。
+    支持连接/断线重连/余额/股票查询，并提供只读查询能力。
     """
 
     def __init__(
@@ -269,7 +272,14 @@ class IBKRTradingClient:
             return None
 
         try:
-            [ticker] = self.ib.reqTickers(contract)
+            tickers = self.ib.reqTickers(contract)
+            if len(tickers) != 1:
+                log_warning(
+                    f"get_quote({symbol})",
+                    RuntimeError(f"unexpected ticker count {len(tickers)}"),
+                )
+                return None
+            ticker = tickers[0]
             last_price = _safe_market_value(ticker.last)
             close_price = _safe_market_value(ticker.close)
             bid = _safe_market_value(ticker.bid)
@@ -317,11 +327,9 @@ class IBKRTradingClient:
             xml_data = self.ib.reqFundamentalData(contract, "ReportSnapshot")
             if xml_data:
                 root = ET.fromstring(xml_data)
-                co_info = root.find(".//CoIDs")
-                if co_info is not None:
-                    name_el = root.find(".//CoGeneralInfo/CoName")
-                    if name_el is not None:
-                        company_name = name_el.text
+                name_el = root.find(".//CoGeneralInfo/CoName")
+                if name_el is not None:
+                    company_name = name_el.text
 
                 ind_el = root.find(".//Industry")
                 if ind_el is not None:
@@ -443,9 +451,9 @@ class IBKRTradingClient:
         import requests
 
         url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
-        headers = {"User-Agent": "Mozilla/5.0"}
+        headers = {"User-Agent": NEWS_USER_AGENT}
         try:
-            response = requests.get(url, headers=headers, timeout=10)
+            response = requests.get(url, headers=headers, timeout=NEWS_REQUEST_TIMEOUT_SECONDS)
         except Exception as err:
             log_warning(f"get_company_news({symbol})", err)
             return []
@@ -454,6 +462,17 @@ class IBKRTradingClient:
             log_warning(
                 f"get_company_news({symbol})",
                 RuntimeError(f"unexpected status {response.status_code}"),
+            )
+            return []
+
+        raw_content = getattr(response, "content", None)
+        if raw_content is None:
+            text = response.text or ""
+            raw_content = text.encode("utf-8")
+        if len(raw_content) > NEWS_MAX_RESPONSE_BYTES:
+            log_warning(
+                f"get_company_news({symbol})",
+                RuntimeError("response too large"),
             )
             return []
 
