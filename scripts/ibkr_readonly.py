@@ -26,6 +26,8 @@ IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "1"))
 MARKET_DATA_TYPE_DELAYED = 3
 RECONNECT_BASE_DELAY_SECONDS = 1
 RECONNECT_MAX_ATTEMPTS = 3
+DEFAULT_STOCK_EXCHANGE = "SMART"
+DEFAULT_STOCK_CURRENCY = "USD"
 
 
 @dataclass
@@ -104,14 +106,17 @@ def log_warning(context: str, error: Exception) -> None:
 
 def build_stock_contract(
     symbol: str,
-    exchange: str = "SMART",
-    currency: str = "USD",
+    *,
+    exchange: str = DEFAULT_STOCK_EXCHANGE,
+    currency: str = DEFAULT_STOCK_CURRENCY,
     primary_exchange: Optional[str] = None,
 ) -> Contract:
     """构造标准股票合约，支持可选的 primary exchange"""
     contract = Stock(symbol, exchange, currency)
-    if primary_exchange is not None:
-        contract.primaryExchange = primary_exchange
+    if primary_exchange:
+        normalized_primary = primary_exchange.strip()
+        if normalized_primary:
+            contract.primaryExchange = normalized_primary
     return contract
 
 
@@ -224,8 +229,9 @@ class IBKRReadOnlyClient:
     def search_symbol(
         self,
         symbol: str,
-        exchange: str = "SMART",
-        currency: str = "USD",
+        *,
+        exchange: str = DEFAULT_STOCK_EXCHANGE,
+        currency: str = DEFAULT_STOCK_CURRENCY,
         primary_exchange: Optional[str] = None,
     ) -> Optional[Contract]:
         """搜索股票代码，返回 qualified Contract"""
