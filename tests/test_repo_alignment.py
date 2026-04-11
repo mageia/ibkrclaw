@@ -39,10 +39,12 @@ def test_setup_script_contains_v2_runtime_defaults():
     assert "IB_HOST=127.0.0.1" in content
 
 
-def test_skill_doc_uses_repo_relative_script_path():
+def test_skill_doc_targets_trading_script_and_keeps_runtime_env_keys():
     content = _read("SKILL.md")
     assert "/Users/" not in content
-    assert "scripts/ibkr_readonly.py" in content
+    assert "scripts/ibkr_trading.py" in content
+    assert "scripts/ibkr_readonly.py" not in content
+    assert "先确认再执行" in content
     for env_key in [
         "IB_HOST=127.0.0.1",
         "IB_PORT=4001",
@@ -60,11 +62,13 @@ def test_api_reference_is_explicitly_marked_deprecated_v1_client_portal():
         assert marker in content, f"references/api-endpoints.md 缺少标记: {marker}"
 
 
-def test_readme_deployment_tree_removes_clientportal_and_keeps_v2_scripts():
+def test_readme_switches_to_trading_entrypoint_and_confirmation_flow():
     content = _read("README.md")
     assert "clientportal/" not in content
-    assert "ibkr_readonly.py" in content
+    assert "ibkr_trading.py" in content
+    assert "ibkr_readonly.py" not in content
     assert "keepalive.py" in content
+    assert "先确认再执行" in content
 
 
 def test_runtime_requirements_declare_runtime_and_dev_dependencies():
@@ -86,7 +90,9 @@ def test_ci_workflow_installs_requirements_and_runs_verification():
         "python-version:",
         "pip install -r requirements-dev.txt",
         "python3 -m pytest tests/test_ibkr_readonly.py tests/test_keepalive.py tests/test_repo_alignment.py -q",
+        "python3 -m pytest tests/test_ibkr_trading.py -q",
         "python3 -m py_compile scripts/ibkr_readonly.py scripts/keepalive.py",
+        "python3 -m py_compile scripts/ibkr_trading.py",
     ]
 
     for fragment in expected_fragments:
