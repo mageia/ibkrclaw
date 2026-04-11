@@ -284,3 +284,27 @@ def test_get_company_news_logs_request_failure(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "get_company_news(LMND)" in captured.err
     assert "network failure" in captured.err
+
+
+def test_format_balance_details_outputs_account_currency_lines():
+    balance = {
+        "TotalCashValue": [
+            {"amount": 100, "currency": "USD", "account": "ACC-1"},
+            {"amount": 800, "currency": "HKD", "account": "ACC-1"},
+        ],
+        "NetLiquidation": [
+            {"amount": 1200, "currency": "USD", "account": "ACC-2"},
+        ],
+    }
+
+    formatted = ibkr_module.format_balance_details(balance)
+
+    assert formatted == [
+        "   TotalCashValue | ACC-1 | USD: $100.00",
+        "   TotalCashValue | ACC-1 | HKD: $800.00",
+        "   NetLiquidation | ACC-2 | USD: $1,200.00",
+    ]
+
+
+def test_format_balance_details_returns_empty_list_when_no_entries():
+    assert ibkr_module.format_balance_details({}) == []
