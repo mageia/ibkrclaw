@@ -37,6 +37,22 @@ class TagValue:
 
 
 ib_insync_stub.TagValue = TagValue
-ib_insync_stub.__all__ = ["IB", "Stock", "ScannerSubscription", "TagValue", "util"]
+
+
+class Contract:
+    def __init__(self, **kwargs):
+        for attr, value in kwargs.items():
+            setattr(self, attr, value)
+
+
+ib_insync_stub.Contract = Contract
+ib_insync_stub.__all__ = [
+    "IB",
+    "Stock",
+    "ScannerSubscription",
+    "TagValue",
+    "Contract",
+    "util",
+]
 
 sys.modules.setdefault("ib_insync", ib_insync_stub)
