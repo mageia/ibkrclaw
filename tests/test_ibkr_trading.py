@@ -36,11 +36,24 @@ class FakeIB:
         self._req_fundamental = lambda contract, report: ""
         self._req_historical = lambda *args, **kwargs: []
         self._req_scanner = lambda *args, **kwargs: []
+        self._place_order = lambda contract, order: SimpleNamespace(
+            contract=contract,
+            order=order,
+            orderStatus=SimpleNamespace(
+                status="Submitted",
+                filled=0,
+                remaining=getattr(order, "totalQuantity", 0),
+                avgFillPrice=0,
+                lastFillPrice=0,
+            ),
+            fills=[],
+        )
         self._connect_outcomes = list(connect_outcomes or [])
         self.qualify_contract_inputs = []
         self.req_tickers_calls = []
         self.req_historical_calls = []
         self.req_scanner_calls = []
+        self.place_order_calls = []
 
     def connect(self, host, port, clientId, readonly=False):
         call_details = {
@@ -76,6 +89,10 @@ class FakeIB:
     def reqScannerData(self, *args, **kwargs):
         self.req_scanner_calls.append({"args": args, "kwargs": kwargs})
         return self._req_scanner(*args, **kwargs)
+
+    def placeOrder(self, contract, order):
+        self.place_order_calls.append({"contract": contract, "order": order})
+        return self._place_order(contract, order)
 
 
 def build_client(monkeypatch, connect_outcomes=None):
@@ -535,3 +552,83 @@ def test_build_order_requires_prices(order_type, limit_price, stop_price):
 
     with pytest.raises(ValueError):
         ibkr_module.build_order(request)
+
+
+def _make_trade(contract, order, *, status="Submitted", filled=0, remaining=0):
+    order_status = SimpleNamespace(
+        status=status,
+        filled=filled,
+        remaining=remaining,
+        avgFillPrice=0,
+        lastFillPrice=0,
+    )
+    return SimpleNamespace(
+        contract=contract,
+        order=order,
+        orderStatus=order_status,
+        fills=[],
+    )
+
+
+def test_place_order_raw_qualifies_contract_then_places(monkeypatch):
+    client, fake_ib = build_client(monkeypatch)
+    contract_spec = ibkr_module.ContractSpec(sec_type="STK", symbol="AAPL")
+    order_request = ibkr_module.OrderRequest(
+        contract=contract_spec,
+        action="BUY",
+        quantity=2,
+        order_type="MKT",
+    )
+    contract = ibkr_module.build_contract(contract_spec)
+    order = ibkr_module.build_order(order_request)
+
+    qualified_contract = _make_contract("AAPL", conid=9001)
+    fake_ib.qualifyContracts = lambda c: [fake_ib.qualify_contract_inputs.append(c) or qualified_contract]
+    trade = _make_trade(qualified_contract, order, remaining=2)
+    fake_ib._place_order = lambda _, __: trade
+
+    result = client.place_order_raw(contract, order)
+
+    assert result is trade
+    assert fake_ib.qualify_contract_inputs == [contract]
+    assert fake_ib.place_order_calls == [
+        {"contract": qualified_contract, "order": order}
+    ]
+
+
+def test_place_order_returns_trade_snapshot(monkeypatch):
+    client, fake_ib = build_client(monkeypatch)
+    contract_spec = ibkr_module.ContractSpec(sec_type="STK", symbol="AAPL")
+    request = ibkr_module.OrderRequest(
+        contract=contract_spec,
+        action="BUY",
+        quantity=3,
+        order_type="LMT",
+        limit_price=101.5,
+        tif="DAY",
+    )
+    qualified_contract = _make_contract("AAPL", conid=8123)
+    fake_ib.qualifyContracts = lambda _: [qualified_contract]
+
+    order = ibkr_module.build_order(request)
+    order.orderId = 77
+    order.permId = 12345
+    order.account = "DU123"
+    trade = _make_trade(qualified_contract, order, filled=1, remaining=2)
+    fake_ib._place_order = lambda _, __: trade
+
+    snapshot = client.place_order(request)
+
+    assert snapshot.order.order_id == 77
+    assert snapshot.order.perm_id == 12345
+    assert snapshot.order.symbol == "AAPL"
+    assert snapshot.order.sec_type == "STK"
+    assert snapshot.order.action == "BUY"
+    assert snapshot.order.order_type == "LMT"
+    assert snapshot.order.total_quantity == 3
+    assert snapshot.order.limit_price == 101.5
+    assert snapshot.order.status == "Submitted"
+    assert snapshot.order.filled == 1
+    assert snapshot.order.remaining == 2
+    assert snapshot.order.exchange == "SMART"
+    assert snapshot.order.account == "DU123"
