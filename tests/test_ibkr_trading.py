@@ -732,6 +732,8 @@ def test_cancel_order_finds_trade_and_cancels(monkeypatch):
 def test_cancel_order_raises_when_not_found(monkeypatch):
     client, fake_ib = build_client(monkeypatch)
     fake_ib.trades = lambda: []
+    fake_ib.openOrders = lambda: []
+    fake_ib.orders = lambda: []
 
     with pytest.raises(ValueError) as exc:
         client.cancel_order(999)
@@ -875,3 +877,89 @@ def test_orders_and_trades_queries_return_snapshots(monkeypatch):
     assert orders[0].action == "BUY"
     assert trades[0].order.order_id == 903
     assert fills[0].execution_id == "EXEC-2"
+
+
+def test_get_open_orders_accepts_trade_like(monkeypatch):
+    client, fake_ib = build_client(monkeypatch)
+    contract = _make_contract("AAPL", conid=9501)
+    order = SimpleNamespace(orderId=1001, action="BUY", orderType="LMT", totalQuantity=1)
+    trade = _make_trade(contract, order, status="Submitted", filled=0, remaining=1)
+    fake_ib.openOrders = lambda: [trade]
+
+    snapshots = client.get_open_orders()
+
+    assert len(snapshots) == 1
+    assert snapshots[0].order_id == 1001
+    assert snapshots[0].symbol == "AAPL"
+
+
+def test_get_orders_accepts_trade_like(monkeypatch):
+    client, fake_ib = build_client(monkeypatch)
+    contract = _make_contract("AAPL", conid=9601)
+    order = SimpleNamespace(orderId=1002, action="SELL", orderType="MKT", totalQuantity=2)
+    trade = _make_trade(contract, order, status="Submitted", filled=0, remaining=2)
+    fake_ib.orders = lambda: [trade]
+
+    snapshots = client.get_orders()
+
+    assert len(snapshots) == 1
+    assert snapshots[0].order_id == 1002
+    assert snapshots[0].action == "SELL"
+
+
+def test_cancel_order_fallbacks_to_open_orders(monkeypatch):
+    client, fake_ib = build_client(monkeypatch)
+    contract = _make_contract("AAPL", conid=9701)
+    order = SimpleNamespace(
+        orderId=1101,
+        action="BUY",
+        orderType="LMT",
+        totalQuantity=1,
+        lmtPrice=9.9,
+        contract=contract,
+    )
+    fake_ib.trades = lambda: []
+    fake_ib.openOrders = lambda: [order]
+    fake_ib.orders = lambda: []
+    fake_ib.cancel_order_calls = []
+    fake_ib.cancelOrder = lambda order_to_cancel: fake_ib.cancel_order_calls.append(order_to_cancel)
+
+    snapshot = client.cancel_order(1101)
+
+    assert fake_ib.cancel_order_calls == [order]
+    assert snapshot.order.order_id == 1101
+    assert snapshot.order.symbol == "AAPL"
+
+
+def test_modify_order_fallbacks_to_orders(monkeypatch):
+    client, fake_ib = build_client(monkeypatch)
+    contract = _make_contract("AAPL", conid=9801)
+    order = SimpleNamespace(
+        orderId=1201,
+        action="BUY",
+        orderType="LMT",
+        totalQuantity=1,
+        lmtPrice=10.0,
+        auxPrice=9.5,
+        contract=contract,
+    )
+    fake_ib.trades = lambda: []
+    fake_ib.openOrders = lambda: []
+    fake_ib.orders = lambda: [order]
+
+    def _place_order(contract_arg, order_arg):
+        return _make_trade(contract_arg, order_arg, status="Submitted", filled=0, remaining=2)
+
+    fake_ib._place_order = _place_order
+
+    request = ibkr_module.ModifyOrderRequest(
+        order_id=1201,
+        quantity=2,
+        limit_price=10.5,
+    )
+
+    snapshot = client.modify_order(request)
+
+    assert snapshot.order.order_id == 1201
+    assert snapshot.order.total_quantity == 2
+    assert len(fake_ib.place_order_calls) == 1

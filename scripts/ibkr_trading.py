@@ -10,6 +10,7 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Callable
 
 from ib_insync import IB, Stock, Contract, ScannerSubscription, TagValue, Option, Future, Order
@@ -415,6 +416,12 @@ def _order_snapshot_from_order(order: Any) -> OrderSnapshot:
     )
 
 
+def _order_snapshot_from_item(item: Any) -> OrderSnapshot:
+    if getattr(item, "order", None) is not None:
+        return _order_snapshot_from_trade(item)
+    return _order_snapshot_from_order(item)
+
+
 def _fill_snapshot_from_fill(fill: Any) -> FillSnapshot:
     execution = getattr(fill, "execution", None)
     execution_id = _normalize_optional_text(
@@ -444,6 +451,21 @@ def _trade_snapshot_from_trade(trade: Any) -> TradeSnapshot:
         order=_order_snapshot_from_trade(trade),
         fills=[_fill_snapshot_from_fill(fill) for fill in fills],
     )
+
+
+def _trade_like_from_item(item: Any) -> Any:
+    order = getattr(item, "order", None) or item
+    contract = getattr(item, "contract", None)
+    order_status = getattr(item, "orderStatus", None)
+    fills = getattr(item, "fills", None) or []
+    return SimpleNamespace(order=order, contract=contract, orderStatus=order_status, fills=fills)
+
+
+def _order_id_from_item(item: Any) -> Optional[int]:
+    order = getattr(item, "order", None)
+    if order is not None:
+        return getattr(order, "orderId", None)
+    return getattr(item, "orderId", None)
 
 
 def _clone_order(order: Any) -> Order:
@@ -897,13 +919,15 @@ class IBKRTradingClient:
         return _trade_snapshot_from_trade(trade)
 
     def _find_trade_by_order_id(self, order_id: int) -> Any:
-        trades = self.get_trades_raw()
-        for trade in trades:
-            order = getattr(trade, "order", None)
-            if order is None:
-                continue
-            if getattr(order, "orderId", None) == order_id:
+        for trade in self.get_trades_raw():
+            if _order_id_from_item(trade) == order_id:
                 return trade
+        for order in self.get_open_orders_raw():
+            if _order_id_from_item(order) == order_id:
+                return order
+        for order in self.get_orders_raw():
+            if _order_id_from_item(order) == order_id:
+                return order
         raise ValueError(f"order_id {order_id} not found")
 
     def cancel_order_raw(self, order_or_trade: Any) -> Any:
@@ -914,15 +938,17 @@ class IBKRTradingClient:
         return order_or_trade
 
     def cancel_order(self, order_id: int) -> TradeSnapshot:
-        trade = self._find_trade_by_order_id(order_id)
-        self.cancel_order_raw(trade)
-        return _trade_snapshot_from_trade(trade)
+        order_item = self._find_trade_by_order_id(order_id)
+        self.cancel_order_raw(order_item)
+        return _trade_snapshot_from_trade(_trade_like_from_item(order_item))
 
     def modify_order_raw(self, trade: Any, request: ModifyOrderRequest) -> Any:
+        order = getattr(trade, "order", None)
+        if order is None:
+            raise ValueError("trade order is required for modify_order_raw")
         contract = getattr(trade, "contract", None)
         if contract is None:
             raise ValueError("trade contract is required for modify_order_raw")
-        order = getattr(trade, "order", None)
         updated = _clone_order(order)
 
         if request.quantity is not None:
@@ -941,7 +967,8 @@ class IBKRTradingClient:
         return self.ib.placeOrder(contract, updated)
 
     def modify_order(self, request: ModifyOrderRequest) -> TradeSnapshot:
-        trade = self._find_trade_by_order_id(request.order_id)
+        order_item = self._find_trade_by_order_id(request.order_id)
+        trade = _trade_like_from_item(order_item)
         updated_trade = self.modify_order_raw(trade, request)
         return _trade_snapshot_from_trade(updated_trade)
 
@@ -958,10 +985,10 @@ class IBKRTradingClient:
         return self.ib.fills()
 
     def get_open_orders(self) -> List[OrderSnapshot]:
-        return [_order_snapshot_from_order(order) for order in self.get_open_orders_raw()]
+        return [_order_snapshot_from_item(order) for order in self.get_open_orders_raw()]
 
     def get_orders(self) -> List[OrderSnapshot]:
-        return [_order_snapshot_from_order(order) for order in self.get_orders_raw()]
+        return [_order_snapshot_from_item(order) for order in self.get_orders_raw()]
 
     def get_trades(self) -> List[TradeSnapshot]:
         return [_trade_snapshot_from_trade(trade) for trade in self.get_trades_raw()]
