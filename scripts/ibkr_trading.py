@@ -4,13 +4,15 @@ IBKR Trading Client - ib_insync 版本
 基础交易连接能力与账户信息读取。
 """
 
+import math
 import os
 import sys
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Callable
 
-from ib_insync import IB, Stock, Contract
+from ib_insync import IB, Stock, Contract, ScannerSubscription, TagValue
 
 # Configuration
 IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
@@ -21,6 +23,7 @@ RECONNECT_BASE_DELAY_SECONDS = 1
 RECONNECT_MAX_ATTEMPTS = 3
 DEFAULT_STOCK_EXCHANGE = "SMART"
 DEFAULT_STOCK_CURRENCY = "USD"
+SCANNER_MARKET_CAP_ABOVE = "100000000"
 
 
 @dataclass
@@ -95,6 +98,17 @@ def get_primary_balance_amount(balance: Dict[str, List[Dict[str, Any]]], tag: st
 def log_warning(context: str, error: Exception) -> None:
     """统一将 warning 输出到 stderr"""
     print(f"{context} 发生错误: {error}", file=sys.stderr)
+
+
+def _safe_market_value(value: Any, default: float = 0.0) -> float:
+    if value is None or isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if math.isnan(numeric):
+            return default
+        return numeric
+    return default
 
 
 def build_stock_contract(
@@ -222,3 +236,237 @@ class IBKRTradingClient:
         except Exception as err:
             log_warning(f"search_symbol({symbol})", err)
         return None
+
+    def get_positions(self) -> List[Position]:
+        """获取当前持仓（使用 portfolio() 获取服务端计算的市值和盈亏，无需行情订阅）"""
+        portfolio_items = self.ib.portfolio()
+        positions: List[Position] = []
+        for item in portfolio_items:
+            contract = item.contract
+            quantity = _safe_market_value(item.position)
+            avg_cost = _safe_market_value(item.averageCost)
+            market_value = _safe_market_value(item.marketValue)
+            unrealized_pnl = _safe_market_value(item.unrealizedPNL)
+
+            cost_basis = avg_cost * quantity if quantity else 0
+            pnl_percent = (unrealized_pnl / abs(cost_basis) * 100) if cost_basis else 0
+
+            positions.append(Position(
+                symbol=contract.localSymbol or contract.symbol,
+                conid=contract.conId,
+                quantity=quantity,
+                avg_cost=avg_cost,
+                market_value=market_value,
+                unrealized_pnl=unrealized_pnl,
+                pnl_percent=pnl_percent,
+            ))
+        return positions
+
+    def get_quote(self, symbol: str) -> Optional[Quote]:
+        """获取行情快照"""
+        contract = self.search_symbol(symbol)
+        if not contract:
+            return None
+
+        try:
+            [ticker] = self.ib.reqTickers(contract)
+            last_price = _safe_market_value(ticker.last)
+            close_price = _safe_market_value(ticker.close)
+            bid = _safe_market_value(ticker.bid)
+            ask = _safe_market_value(ticker.ask)
+            volume = int(_safe_market_value(ticker.volume))
+
+            if not last_price:
+                last_price = close_price
+
+            change = (last_price - close_price) if last_price and close_price else 0
+            change_pct = (change / close_price * 100) if close_price else 0
+
+            return Quote(
+                conid=contract.conId,
+                symbol=symbol,
+                last_price=last_price or 0,
+                bid=bid,
+                ask=ask,
+                volume=volume,
+                change=round(change, 2),
+                change_pct=round(change_pct, 2),
+            )
+        except Exception as err:
+            log_warning(f"get_quote({symbol})", err)
+            return None
+
+    def get_fundamentals(self, symbol: str) -> Optional[FundamentalData]:
+        """获取个股基本面指标"""
+        contract = self.search_symbol(symbol)
+        if not contract:
+            return None
+
+        company_name = contract.description if hasattr(contract, "description") else ""
+        industry = ""
+        category = ""
+        market_cap = "N/A"
+        pe_ratio = "N/A"
+        eps = "N/A"
+        dividend_yield = "N/A"
+        high_52w = "N/A"
+        low_52w = "N/A"
+        avg_volume = "N/A"
+
+        try:
+            xml_data = self.ib.reqFundamentalData(contract, "ReportSnapshot")
+            if xml_data:
+                root = ET.fromstring(xml_data)
+                co_info = root.find(".//CoIDs")
+                if co_info is not None:
+                    name_el = root.find(".//CoGeneralInfo/CoName")
+                    if name_el is not None:
+                        company_name = name_el.text
+
+                ind_el = root.find(".//Industry")
+                if ind_el is not None:
+                    industry = ind_el.get("type", "")
+                    category = ind_el.text or ""
+
+                for ratio in root.findall(".//Ratio"):
+                    field_name = ratio.get("FieldName", "")
+                    value = ratio.text or "N/A"
+                    if field_name == "MKTCAP":
+                        market_cap = value
+                    elif field_name == "PEEXCLXOR":
+                        pe_ratio = value
+                    elif field_name == "TTMEPSXCLX":
+                        eps = value
+                    elif field_name == "YIELD":
+                        dividend_yield = value
+                    elif field_name == "NHIG":
+                        high_52w = value
+                    elif field_name == "NLOW":
+                        low_52w = value
+                    elif field_name in ("APTS10DAVG", "VOL10DAVG"):
+                        avg_volume = value
+        except Exception as err:
+            log_warning(f"get_fundamentals({symbol})", err)
+
+        try:
+            [ticker] = self.ib.reqTickers(contract)
+            if high_52w == "N/A" and getattr(ticker, "high", None):
+                high_52w = str(ticker.high)
+            if low_52w == "N/A" and getattr(ticker, "low", None):
+                low_52w = str(ticker.low)
+        except Exception as err:
+            log_warning(f"get_fundamentals({symbol}) ticker fallback", err)
+
+        return FundamentalData(
+            conid=contract.conId,
+            symbol=symbol,
+            company_name=company_name,
+            industry=industry,
+            category=category,
+            market_cap=market_cap,
+            pe_ratio=pe_ratio,
+            eps=eps,
+            dividend_yield=dividend_yield,
+            high_52w=high_52w,
+            low_52w=low_52w,
+            avg_volume=avg_volume,
+        )
+
+    def get_historical_data(
+        self,
+        symbol: str,
+        duration: str = "3 M",
+        bar_size: str = "1 day",
+    ) -> List[dict]:
+        """获取历史 K 线数据"""
+        contract = self.search_symbol(symbol)
+        if not contract:
+            return []
+
+        try:
+            bars = self.ib.reqHistoricalData(
+                contract,
+                endDateTime="",
+                durationStr=duration,
+                barSizeSetting=bar_size,
+                whatToShow="TRADES",
+                useRTH=True,
+            )
+            return [
+                {
+                    "date": str(bar.date),
+                    "open": bar.open,
+                    "high": bar.high,
+                    "low": bar.low,
+                    "close": bar.close,
+                    "volume": bar.volume,
+                }
+                for bar in bars
+            ]
+        except Exception as err:
+            log_warning(f"get_historical_data({symbol})", err)
+            return []
+
+    def run_scanner(self, scan_type: str = "TOP_PERC_GAIN", size: int = 10) -> List[dict]:
+        """全市场智能扫描"""
+        try:
+            subscription = ScannerSubscription(
+                instrument="STK",
+                locationCode="STK.US.MAJOR",
+                scanCode=scan_type,
+                numberOfRows=size,
+            )
+            tag_values = [
+                TagValue("marketCapAbove", SCANNER_MARKET_CAP_ABOVE),
+            ]
+            results = self.ib.reqScannerData(
+                subscription,
+                scannerSubscriptionFilterOptions=tag_values,
+            )
+            return [
+                {
+                    "rank": item.rank,
+                    "symbol": item.contractDetails.contract.symbol,
+                    "conid": item.contractDetails.contract.conId,
+                    "distance": item.distance,
+                    "benchmark": item.benchmark,
+                    "projection": item.projection,
+                }
+                for item in results
+            ]
+        except Exception as err:
+            log_warning(f"run_scanner({scan_type})", err)
+            return []
+
+    def get_company_news(self, symbol: str, limit: int = 5) -> List[dict]:
+        """获取公司最新新闻"""
+        import requests
+
+        url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+        except Exception as err:
+            log_warning(f"get_company_news({symbol})", err)
+            return []
+
+        if response.status_code != 200:
+            log_warning(
+                f"get_company_news({symbol})",
+                RuntimeError(f"unexpected status {response.status_code}"),
+            )
+            return []
+
+        try:
+            root = ET.fromstring(response.text)
+        except Exception as err:
+            log_warning(f"get_company_news({symbol})", err)
+            return []
+
+        news: List[dict] = []
+        for item in root.findall(".//item")[:limit]:
+            title = item.find("title").text if item.find("title") is not None else ""
+            pub_date = item.find("pubDate").text if item.find("pubDate") is not None else ""
+            link = item.find("link").text if item.find("link") is not None else ""
+            news.append({"title": title, "date": pub_date, "link": link})
+        return news
