@@ -614,10 +614,26 @@ class IBKRTradingClient:
         handler = getattr(self, "_disconnect_handler", None)
         if handler is None:
             return
-        try:
-            self.ib.disconnectedEvent.remove(handler)
-        except ValueError:
+        event = self.ib.disconnectedEvent
+        if hasattr(event, "__isub__"):
+            try:
+                event -= handler
+            except ValueError:
+                return
             return
+        disconnect = getattr(event, "disconnect", None)
+        if callable(disconnect):
+            try:
+                disconnect(handler)
+            except ValueError:
+                return
+            return
+        remove = getattr(event, "remove", None)
+        if callable(remove):
+            try:
+                remove(handler)
+            except ValueError:
+                return
 
     def get_balance(self) -> Dict[str, List[Dict[str, Any]]]:
         """获取账户余额/总结"""

@@ -25,6 +25,19 @@ class FakeEvent(list):
         super().clear()
 
 
+class EventWithoutRemove:
+    def __init__(self):
+        self.handlers = []
+
+    def __iadd__(self, handler):
+        self.handlers.append(handler)
+        return self
+
+    def __isub__(self, handler):
+        self.handlers.remove(handler)
+        return self
+
+
 class FakeIB:
     def __init__(self, connect_outcomes=None):
         self.disconnectedEvent = FakeEvent()
@@ -139,6 +152,28 @@ def test_disconnect_handler_reconnects_in_trading_mode(monkeypatch, capsys):
     assert fake_ib.market_data_types == [ibkr_module.MARKET_DATA_TYPE_DELAYED]
     captured = capsys.readouterr()
     assert "重连成功" in captured.out
+
+
+def test_disconnect_unbinds_event_with_isub_support(monkeypatch):
+    class FakeIBNoRemove:
+        def __init__(self):
+            self.disconnectedEvent = EventWithoutRemove()
+            self.disconnected = False
+
+        def isConnected(self):
+            return True
+
+        def disconnect(self):
+            self.disconnected = True
+
+    fake_ib = FakeIBNoRemove()
+    client = ibkr_module.IBKRTradingClient(ib_factory=lambda: fake_ib)
+    assert len(fake_ib.disconnectedEvent.handlers) == 1
+
+    client.disconnect()
+
+    assert fake_ib.disconnected is True
+    assert fake_ib.disconnectedEvent.handlers == []
 
 
 def _make_summary_item(tag: str, value: str, currency: str, account: str):
