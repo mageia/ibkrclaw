@@ -479,6 +479,30 @@ def format_pnl(value: float, pct: float) -> str:
     return f"{sign} {color_value} ({pct:+.2f}%)"
 
 
+def format_balance_details(balance: Dict[str, List[Dict[str, Any]]]) -> List[str]:
+    """根据余额详情构造 CLI 展示行"""
+    lines: List[str] = []
+    for tag in ("TotalCashValue", "NetLiquidation"):
+        entries = balance.get(tag) or []
+        for entry in entries:
+            amount_value = entry.get("amount")
+            parsed_amount = parse_account_summary_value(amount_value)
+            if parsed_amount is not None:
+                display_amount = format_currency(parsed_amount)
+            else:
+                display_amount = str(amount_value)
+
+            account = entry.get("account")
+            currency = entry.get("currency")
+            account_display = "" if account is None else str(account)
+            currency_display = "" if currency is None else str(currency)
+
+            lines.append(
+                f"   {tag} | {account_display} | {currency_display}: {display_amount}"
+            )
+    return lines
+
+
 def main():
     """主函数 - 展示账户信息"""
     print("🏦 IBKR 投研辅助与只读查询工具 (ib_insync)")
@@ -508,6 +532,11 @@ def main():
     net_liq = get_primary_balance_amount(balance, "NetLiquidation")
     print(f"💵 现金余额: {format_currency(cash)}")
     print(f"💰 净资产: {format_currency(net_liq)}")
+    detail_lines = format_balance_details(balance)
+    if detail_lines:
+        print("💼 余额明细:")
+        for line in detail_lines:
+            print(line)
     print("-" * 50)
 
     # 持仓
