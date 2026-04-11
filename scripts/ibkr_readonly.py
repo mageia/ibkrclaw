@@ -102,6 +102,19 @@ def log_warning(context: str, error: Exception) -> None:
     print(f"{context} 发生错误: {error}", file=sys.stderr)
 
 
+def build_stock_contract(
+    symbol: str,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    primary_exchange: Optional[str] = None,
+) -> Contract:
+    """构造标准股票合约，支持可选的 primary exchange"""
+    contract = Stock(symbol, exchange, currency)
+    if primary_exchange is not None:
+        contract.primaryExchange = primary_exchange
+    return contract
+
+
 class IBKRReadOnlyClient:
     """
     IBKR 只读客户端 - ib_insync 版
@@ -208,9 +221,20 @@ class IBKRReadOnlyClient:
             ))
         return positions
 
-    def search_symbol(self, symbol: str) -> Optional[Contract]:
+    def search_symbol(
+        self,
+        symbol: str,
+        exchange: str = "SMART",
+        currency: str = "USD",
+        primary_exchange: Optional[str] = None,
+    ) -> Optional[Contract]:
         """搜索股票代码，返回 qualified Contract"""
-        contract = Stock(symbol, 'SMART', 'USD')
+        contract = build_stock_contract(
+            symbol,
+            exchange=exchange,
+            currency=currency,
+            primary_exchange=primary_exchange,
+        )
         try:
             qualified = self.ib.qualifyContracts(contract)
             if qualified:
