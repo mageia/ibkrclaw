@@ -2,6 +2,8 @@ from importlib import util
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 def _load_ibkr_module():
     script_path = Path(__file__).resolve().parents[1] / "scripts" / "ibkr_trading.py"
@@ -360,3 +362,123 @@ def test_get_company_news_rejects_oversized_response(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "get_company_news(LMND)" in captured.err
     assert "response too large" in captured.err
+
+
+def test_build_contract_supports_stock_option_future():
+    stock_spec = ibkr_module.ContractSpec(sec_type="STK", symbol="AAPL")
+    option_spec = ibkr_module.ContractSpec(
+        sec_type="OPT",
+        symbol="AAPL",
+        exchange="SMART",
+        currency="USD",
+        last_trade_date_or_contract_month="20250117",
+        strike=150.0,
+        right="C",
+        multiplier="100",
+    )
+    future_spec = ibkr_module.ContractSpec(
+        sec_type="FUT",
+        symbol="ES",
+        exchange="GLOBEX",
+        currency="USD",
+        last_trade_date_or_contract_month="202506",
+    )
+
+    stock = ibkr_module.build_contract(stock_spec)
+    option = ibkr_module.build_contract(option_spec)
+    future = ibkr_module.build_contract(future_spec)
+
+    assert stock.secType == "STK"
+    assert stock.symbol == "AAPL"
+    assert option.secType == "OPT"
+    assert option.symbol == "AAPL"
+    assert option.lastTradeDateOrContractMonth == "20250117"
+    assert option.strike == 150.0
+    assert option.right == "C"
+    assert future.secType == "FUT"
+    assert future.symbol == "ES"
+    assert future.lastTradeDateOrContractMonth == "202506"
+
+
+def test_build_contract_raises_for_incomplete_option():
+    incomplete_spec = ibkr_module.ContractSpec(
+        sec_type="OPT",
+        symbol="AAPL",
+        exchange="SMART",
+        currency="USD",
+    )
+
+    with pytest.raises(ValueError):
+        ibkr_module.build_contract(incomplete_spec)
+
+
+def test_build_order_supports_market_limit_stop_and_stop_limit():
+    contract_spec = ibkr_module.ContractSpec(sec_type="STK", symbol="AAPL")
+
+    market_request = ibkr_module.OrderRequest(
+        contract=contract_spec,
+        action="BUY",
+        quantity=10,
+        order_type="MKT",
+    )
+    limit_request = ibkr_module.OrderRequest(
+        contract=contract_spec,
+        action="SELL",
+        quantity=5,
+        order_type="LMT",
+        limit_price=123.45,
+    )
+    stop_request = ibkr_module.OrderRequest(
+        contract=contract_spec,
+        action="SELL",
+        quantity=5,
+        order_type="STP",
+        stop_price=120.0,
+    )
+    stop_limit_request = ibkr_module.OrderRequest(
+        contract=contract_spec,
+        action="BUY",
+        quantity=5,
+        order_type="STP_LMT",
+        limit_price=121.0,
+        stop_price=120.0,
+    )
+
+    market_order = ibkr_module.build_order(market_request)
+    limit_order = ibkr_module.build_order(limit_request)
+    stop_order = ibkr_module.build_order(stop_request)
+    stop_limit_order = ibkr_module.build_order(stop_limit_request)
+
+    assert market_order.orderType == "MKT"
+    assert market_order.action == "BUY"
+    assert market_order.totalQuantity == 10
+    assert limit_order.orderType == "LMT"
+    assert limit_order.lmtPrice == 123.45
+    assert stop_order.orderType == "STP"
+    assert stop_order.auxPrice == 120.0
+    assert stop_limit_order.orderType == "STP LMT"
+    assert stop_limit_order.lmtPrice == 121.0
+    assert stop_limit_order.auxPrice == 120.0
+
+
+@pytest.mark.parametrize(
+    ("order_type", "limit_price", "stop_price"),
+    [
+        ("LMT", None, None),
+        ("STP", None, None),
+        ("STP_LMT", 120.0, None),
+    ],
+)
+def test_build_order_requires_prices(order_type, limit_price, stop_price):
+    contract_spec = ibkr_module.ContractSpec(sec_type="STK", symbol="AAPL")
+    request = ibkr_module.OrderRequest(
+        contract=contract_spec,
+        action="BUY",
+        quantity=1,
+        order_type=order_type,
+        limit_price=limit_price,
+        stop_price=stop_price,
+    )
+
+    with pytest.raises(ValueError):
+        ibkr_module.build_order(request)

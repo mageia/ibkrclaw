@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Callable
 
-from ib_insync import IB, Stock, Contract, ScannerSubscription, TagValue
+from ib_insync import IB, Stock, Contract, ScannerSubscription, TagValue, Option, Future, Order
 
 # Configuration
 IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
@@ -66,6 +66,148 @@ class FundamentalData:
     high_52w: str
     low_52w: str
     avg_volume: str
+
+
+@dataclass(frozen=True)
+class ContractSpec:
+    sec_type: str
+    symbol: str
+    exchange: Optional[str] = None
+    currency: Optional[str] = None
+    primary_exchange: Optional[str] = None
+    last_trade_date_or_contract_month: Optional[str] = None
+    strike: Optional[float] = None
+    right: Optional[str] = None
+    multiplier: Optional[str] = None
+    local_symbol: Optional[str] = None
+    trading_class: Optional[str] = None
+    con_id: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class OrderRequest:
+    contract: ContractSpec
+    action: str
+    quantity: float
+    order_type: str
+    limit_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    tif: Optional[str] = None
+    outside_rth: Optional[bool] = None
+    account: Optional[str] = None
+    transmit: Optional[bool] = None
+
+
+@dataclass(frozen=True)
+class ModifyOrderRequest:
+    order_id: int
+    quantity: Optional[float] = None
+    limit_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    tif: Optional[str] = None
+    outside_rth: Optional[bool] = None
+    transmit: Optional[bool] = None
+
+
+def _ensure_required(value: Any, field_name: str, sec_type: str) -> Any:
+    if value in (None, ""):
+        raise ValueError(f"{sec_type} missing required field: {field_name}")
+    return value
+
+
+def build_contract(spec: ContractSpec) -> Contract:
+    sec_type = spec.sec_type.upper()
+    symbol = _ensure_required(spec.symbol, "symbol", sec_type)
+
+    if sec_type == "STK":
+        exchange = spec.exchange or DEFAULT_STOCK_EXCHANGE
+        currency = spec.currency or DEFAULT_STOCK_CURRENCY
+        contract: Contract = Stock(symbol, exchange, currency)
+        contract.secType = "STK"
+    elif sec_type == "OPT":
+        exchange = _ensure_required(spec.exchange, "exchange", sec_type)
+        currency = _ensure_required(spec.currency, "currency", sec_type)
+        expiry = _ensure_required(
+            spec.last_trade_date_or_contract_month,
+            "last_trade_date_or_contract_month",
+            sec_type,
+        )
+        strike = _ensure_required(spec.strike, "strike", sec_type)
+        right = _ensure_required(spec.right, "right", sec_type)
+        contract = Option(
+            symbol,
+            expiry,
+            strike,
+            right,
+            exchange,
+            currency,
+        )
+    elif sec_type == "FUT":
+        exchange = _ensure_required(spec.exchange, "exchange", sec_type)
+        currency = _ensure_required(spec.currency, "currency", sec_type)
+        contract_month = spec.last_trade_date_or_contract_month or spec.local_symbol
+        _ensure_required(contract_month, "last_trade_date_or_contract_month", sec_type)
+        contract = Future(
+            symbol,
+            contract_month,
+            exchange,
+            currency,
+        )
+    else:
+        raise ValueError(f"unsupported sec_type: {sec_type}")
+
+    if spec.primary_exchange:
+        contract.primaryExchange = spec.primary_exchange
+    if spec.local_symbol:
+        contract.localSymbol = spec.local_symbol
+    if spec.multiplier:
+        contract.multiplier = spec.multiplier
+    if spec.trading_class:
+        contract.tradingClass = spec.trading_class
+    if spec.con_id is not None:
+        contract.conId = spec.con_id
+
+    return contract
+
+
+def qualify_contract(ib: IB, spec: ContractSpec) -> Contract:
+    contract = build_contract(spec)
+    qualified = ib.qualifyContracts(contract)
+    if not qualified:
+        raise ValueError(f"qualify_contract returned empty result for {spec}")
+    return qualified[0]
+
+
+def build_order(request: OrderRequest) -> Order:
+    order_type = request.order_type.upper()
+    if order_type == "LMT" and request.limit_price is None:
+        raise ValueError("limit_price required for LMT order")
+    if order_type == "STP" and request.stop_price is None:
+        raise ValueError("stop_price required for STP order")
+    if order_type == "STP_LMT" and (request.stop_price is None or request.limit_price is None):
+        raise ValueError("stop_price and limit_price required for STP_LMT order")
+
+    normalized_type = "STP LMT" if order_type == "STP_LMT" else order_type
+    order = Order()
+    order.action = request.action
+    order.totalQuantity = request.quantity
+    order.orderType = normalized_type
+
+    if order_type in {"LMT", "STP_LMT"}:
+        order.lmtPrice = request.limit_price
+    if order_type in {"STP", "STP_LMT"}:
+        order.auxPrice = request.stop_price
+
+    if request.tif is not None:
+        order.tif = request.tif
+    if request.outside_rth is not None:
+        order.outsideRth = request.outside_rth
+    if request.account is not None:
+        order.account = request.account
+    if request.transmit is not None:
+        order.transmit = request.transmit
+
+    return order
 
 
 def parse_account_summary_value(value: Any) -> Optional[float]:
