@@ -412,6 +412,19 @@ def test_build_contract_raises_for_incomplete_option():
         ibkr_module.build_contract(incomplete_spec)
 
 
+def test_build_contract_requires_future_contract_month():
+    spec = ibkr_module.ContractSpec(
+        sec_type="FUT",
+        symbol="ES",
+        exchange="GLOBEX",
+        currency="USD",
+        local_symbol="ESU5",
+    )
+
+    with pytest.raises(ValueError):
+        ibkr_module.build_contract(spec)
+
+
 def test_build_order_supports_market_limit_stop_and_stop_limit():
     contract_spec = ibkr_module.ContractSpec(sec_type="STK", symbol="AAPL")
 
@@ -459,6 +472,46 @@ def test_build_order_supports_market_limit_stop_and_stop_limit():
     assert stop_limit_order.orderType == "STP LMT"
     assert stop_limit_order.lmtPrice == 121.0
     assert stop_limit_order.auxPrice == 120.0
+
+
+def test_build_order_rejects_unknown_type():
+    contract_spec = ibkr_module.ContractSpec(sec_type="STK", symbol="AAPL")
+    request = ibkr_module.OrderRequest(
+        contract=contract_spec,
+        action="BUY",
+        quantity=1,
+        order_type="XYZ",
+    )
+
+    with pytest.raises(ValueError):
+        ibkr_module.build_order(request)
+
+
+def test_build_order_rejects_invalid_action():
+    contract_spec = ibkr_module.ContractSpec(sec_type="STK", symbol="AAPL")
+    request = ibkr_module.OrderRequest(
+        contract=contract_spec,
+        action="HOLD",
+        quantity=1,
+        order_type="MKT",
+    )
+
+    with pytest.raises(ValueError):
+        ibkr_module.build_order(request)
+
+
+@pytest.mark.parametrize("quantity", [0, -1])
+def test_build_order_rejects_non_positive_quantity(quantity):
+    contract_spec = ibkr_module.ContractSpec(sec_type="STK", symbol="AAPL")
+    request = ibkr_module.OrderRequest(
+        contract=contract_spec,
+        action="BUY",
+        quantity=quantity,
+        order_type="MKT",
+    )
+
+    with pytest.raises(ValueError):
+        ibkr_module.build_order(request)
 
 
 @pytest.mark.parametrize(

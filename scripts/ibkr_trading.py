@@ -27,6 +27,9 @@ SCANNER_MARKET_CAP_ABOVE = "100000000"
 NEWS_REQUEST_TIMEOUT_SECONDS = 10
 NEWS_USER_AGENT = "Mozilla/5.0"
 NEWS_MAX_RESPONSE_BYTES = 1_000_000
+MIN_ORDER_QUANTITY = 0
+SUPPORTED_ORDER_TYPES = {"MKT", "LMT", "STP", "STP_LMT"}
+SUPPORTED_ORDER_ACTIONS = {"BUY", "SELL"}
 
 
 @dataclass
@@ -145,8 +148,11 @@ def build_contract(spec: ContractSpec) -> Contract:
     elif sec_type == "FUT":
         exchange = _ensure_required(spec.exchange, "exchange", sec_type)
         currency = _ensure_required(spec.currency, "currency", sec_type)
-        contract_month = spec.last_trade_date_or_contract_month or spec.local_symbol
-        _ensure_required(contract_month, "last_trade_date_or_contract_month", sec_type)
+        contract_month = _ensure_required(
+            spec.last_trade_date_or_contract_month,
+            "last_trade_date_or_contract_month",
+            sec_type,
+        )
         contract = Future(
             symbol,
             contract_month,
@@ -180,6 +186,16 @@ def qualify_contract(ib: IB, spec: ContractSpec) -> Contract:
 
 def build_order(request: OrderRequest) -> Order:
     order_type = request.order_type.upper()
+    if order_type not in SUPPORTED_ORDER_TYPES:
+        raise ValueError(f"unsupported order_type: {request.order_type}")
+
+    action = request.action.upper()
+    if action not in SUPPORTED_ORDER_ACTIONS:
+        raise ValueError(f"unsupported action: {request.action}")
+
+    if request.quantity <= MIN_ORDER_QUANTITY:
+        raise ValueError("quantity must be greater than zero")
+
     if order_type == "LMT" and request.limit_price is None:
         raise ValueError("limit_price required for LMT order")
     if order_type == "STP" and request.stop_price is None:
@@ -189,7 +205,7 @@ def build_order(request: OrderRequest) -> Order:
 
     normalized_type = "STP LMT" if order_type == "STP_LMT" else order_type
     order = Order()
-    order.action = request.action
+    order.action = action
     order.totalQuantity = request.quantity
     order.orderType = normalized_type
 
