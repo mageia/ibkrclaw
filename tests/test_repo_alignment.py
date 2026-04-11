@@ -7,6 +7,18 @@ def _read(rel_path: str) -> str:
     return (REPO_ROOT / rel_path).read_text(encoding="utf-8")
 
 
+def _normalized_lines(relative_path: str) -> list[str]:
+    path = REPO_ROOT / relative_path
+    assert path.exists(), f"{relative_path} 不存在"
+    lines = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        normalized = line.strip()
+        if not normalized or normalized.startswith("#"):
+            continue
+        lines.append(normalized)
+    return lines
+
+
 def test_setup_script_removes_legacy_client_portal_stack():
     content = _read("scripts/setup.sh").lower()
     forbidden_tokens = [
@@ -53,3 +65,29 @@ def test_readme_deployment_tree_removes_clientportal_and_keeps_v2_scripts():
     assert "clientportal/" not in content
     assert "ibkr_readonly.py" in content
     assert "keepalive.py" in content
+
+
+def test_runtime_requirements_declare_runtime_and_dev_dependencies():
+    runtime_lines = _normalized_lines("requirements.txt")
+    assert sorted(runtime_lines) == ["ib_insync", "requests"]
+
+    dev_lines = _normalized_lines("requirements-dev.txt")
+    assert "-r requirements.txt" in dev_lines
+    assert "pytest>=8,<9" in dev_lines
+    assert sorted(dev_lines) == ["-r requirements.txt", "pytest>=8,<9"]
+
+
+def test_ci_workflow_installs_requirements_and_runs_verification():
+    workflow_lines = _normalized_lines(".github/workflows/python-tests.yml")
+    workflow_text = "\n".join(workflow_lines)
+
+    expected_fragments = [
+        "actions/setup-python",
+        "python-version:",
+        "pip install -r requirements-dev.txt",
+        "python3 -m pytest tests/test_ibkr_readonly.py tests/test_keepalive.py tests/test_repo_alignment.py -q",
+        "python3 -m py_compile scripts/ibkr_readonly.py scripts/keepalive.py",
+    ]
+
+    for fragment in expected_fragments:
+        assert fragment in workflow_text, f"{fragment} 未出现在 CI 工作流"
