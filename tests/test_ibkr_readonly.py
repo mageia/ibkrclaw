@@ -31,6 +31,7 @@ class FakeIB:
         self.market_data_types = []
         self.accountSummary = lambda: []
         self._connect_outcomes = list(connect_outcomes or [])
+        self.qualify_contract_inputs = []
 
     def connect(self, host, port, clientId, readonly=False):
         call_details = {
@@ -47,6 +48,10 @@ class FakeIB:
 
     def reqMarketDataType(self, market_data_type):
         self.market_data_types.append(market_data_type)
+
+    def qualifyContracts(self, contract):
+        self.qualify_contract_inputs.append(contract)
+        return [contract]
 
 
 def build_client(monkeypatch, connect_outcomes=None):
@@ -202,6 +207,50 @@ def test_search_symbol_logs_contract_lookup_failure(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "search_symbol(AAPL)" in captured.err
     assert "qualification failed" in captured.err
+
+
+def test_search_symbol_keeps_default_smart_usd_contract(monkeypatch):
+    client, fake_ib = build_client(monkeypatch)
+
+    contract = client.search_symbol("AAPL")
+
+    assert contract is not None
+    assert fake_ib.qualify_contract_inputs, "search_symbol should qualify at least one contract"
+    recorded = next(
+        (c for c in fake_ib.qualify_contract_inputs if c.symbol == "AAPL"),
+        None,
+    )
+    assert recorded is not None
+
+    assert recorded.symbol == "AAPL"
+    assert recorded.exchange == "SMART"
+    assert recorded.currency == "USD"
+    primary_exchange = getattr(recorded, "primaryExchange", None)
+    assert primary_exchange in ("", None)
+
+
+def test_search_symbol_accepts_exchange_currency_and_primary_exchange(monkeypatch):
+    client, fake_ib = build_client(monkeypatch)
+
+    contract = client.search_symbol(
+        "700",
+        exchange="SEHK",
+        currency="HKD",
+        primary_exchange="SEHK",
+    )
+    assert contract is not None
+
+    assert fake_ib.qualify_contract_inputs, "search_symbol should forward new contract configuration parameters"
+    recorded = next(
+        (c for c in fake_ib.qualify_contract_inputs if c.symbol == "700"),
+        None,
+    )
+    assert recorded is not None
+
+    assert recorded.symbol == "700"
+    assert recorded.exchange == "SEHK"
+    assert recorded.currency == "HKD"
+    assert recorded.primaryExchange == "SEHK"
 
 
 def test_get_fundamentals_logs_snapshot_failure_and_returns_partial_data(monkeypatch, capsys):
