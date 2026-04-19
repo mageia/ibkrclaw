@@ -134,6 +134,16 @@ client.disconnect()
 PY
 ```
 
+### REST Client 快速对比检查
+
+在仓库根目录执行：
+
+```bash
+python3 scripts/compare_ibkr_clients.py --symbol AAPL
+```
+
+脚本会同时连接 socket 客户端和 REST 客户端，输出 `balance` / `positions` / `quote` 的结构化对比 JSON。
+
 ---
 
 ## 💬 在 OpenClaw / Telegram 中使用
