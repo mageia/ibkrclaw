@@ -18,6 +18,24 @@ DEFAULT_VERIFY_SSL = os.getenv("IBKR_REST_VERIFY_SSL", "false").lower() in {
     "yes",
     "on",
 }
+QUOTE_SNAPSHOT_FIELDS = "31,84,86,87,88,7762"
+HISTORY_PERIOD_MAP = {
+    "1 D": "1d",
+    "1 W": "1w",
+    "1 M": "1m",
+    "3 M": "3m",
+    "6 M": "6m",
+    "1 Y": "1y",
+    "5 Y": "5y",
+}
+HISTORY_BAR_MAP = {
+    "1 min": "1min",
+    "5 mins": "5min",
+    "1 hour": "1h",
+    "1 day": "1d",
+    "1 week": "1w",
+    "1 month": "1m",
+}
 
 
 @dataclass(frozen=True)
@@ -298,6 +316,101 @@ class IBKRRESTTradingClient:
                 )
             page_id += 1
         return positions
+
+    def search_symbol(self, symbol: str, **kwargs: Any) -> Optional[dict]:
+        params: dict[str, Any] = {"symbol": symbol}
+        params.update(kwargs)
+        payload = self._request_json("GET", "/iserver/secdef/search", params=params)
+        if not isinstance(payload, list) or not payload:
+            return None
+        first = payload[0]
+        return first if isinstance(first, dict) else None
+
+    @classmethod
+    def _parse_percent(cls, value: Any) -> Optional[float]:
+        if value is None or isinstance(value, bool):
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("%"):
+            text = text[:-1]
+        return cls._parse_numeric(text)
+
+    def get_quote(self, symbol: str) -> Optional[Quote]:
+        contract = self.search_symbol(symbol)
+        if contract is None:
+            return None
+
+        conid = int(contract.get("conid", contract.get("conId", 0)) or 0)
+        payload = self._request_json(
+            "GET",
+            "/iserver/marketdata/snapshot",
+            params={"conids": conid, "fields": QUOTE_SNAPSHOT_FIELDS},
+        )
+        if not isinstance(payload, list) or not payload:
+            return None
+        row = payload[0]
+        if not isinstance(row, dict):
+            return None
+
+        last_price = self._parse_numeric(row.get("31")) or 0.0
+        close_price = self._parse_numeric(row.get("88")) or 0.0
+        bid = self._parse_numeric(row.get("84")) or 0.0
+        ask = self._parse_numeric(row.get("86")) or 0.0
+        volume = int(self._parse_numeric(row.get("87")) or 0)
+        change = round(last_price - close_price, 2) if close_price else 0.0
+        parsed_change_pct = self._parse_percent(row.get("7762"))
+        change_pct = (
+            round(parsed_change_pct, 2)
+            if parsed_change_pct is not None
+            else (round(change / close_price * 100, 2) if close_price else 0.0)
+        )
+
+        return Quote(
+            conid=conid,
+            symbol=symbol,
+            last_price=last_price,
+            bid=bid,
+            ask=ask,
+            volume=volume,
+            change=change,
+            change_pct=change_pct,
+        )
+
+    def get_historical_data(
+        self,
+        symbol: str,
+        duration: str = "3 M",
+        bar_size: str = "1 day",
+    ) -> List[dict]:
+        contract = self.search_symbol(symbol)
+        if contract is None:
+            return []
+
+        period = HISTORY_PERIOD_MAP.get(duration, duration)
+        bar = HISTORY_BAR_MAP.get(bar_size, bar_size)
+        conid = int(contract.get("conid", contract.get("conId", 0)) or 0)
+        payload = self._request_json(
+            "GET",
+            "/iserver/marketdata/history",
+            params={"conid": conid, "period": period, "bar": bar},
+        )
+        bars = payload.get("data", []) if isinstance(payload, dict) else []
+        if not isinstance(bars, list):
+            return []
+        return [
+            {
+                "date": row.get("t"),
+                "open": row.get("o"),
+                "high": row.get("h"),
+                "low": row.get("l"),
+                "close": row.get("c"),
+                "volume": row.get("v"),
+            }
+            for row in bars
+            if isinstance(row, dict)
+        ]
 
     def _request_json(
         self,

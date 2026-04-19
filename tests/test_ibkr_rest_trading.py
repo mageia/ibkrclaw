@@ -406,3 +406,119 @@ def test_get_balance_preserves_raw_amount_when_parse_fails():
             {"params": None, "json": None, "timeout": 10.0, "verify": False},
         ),
     ]
+
+
+def test_search_symbol_get_quote_and_get_historical_data_map_rest_payloads():
+    session = SequencedSession(
+        [
+            FakeResponse(
+                200,
+                "ok",
+                [
+                    {
+                        "conid": 265598,
+                        "symbol": "AAPL",
+                        "companyName": "APPLE INC",
+                        "description": "NASDAQ",
+                    }
+                ],
+            ),
+            FakeResponse(200, "ok", [{"conid": 265598, "symbol": "AAPL"}]),
+            FakeResponse(
+                200,
+                "ok",
+                [
+                    {
+                        "conid": 265598,
+                        "31": "101.5",
+                        "84": "101.0",
+                        "86": "102.0",
+                        "87": "1500",
+                        "88": "100.0",
+                        "7762": "1.5",
+                    }
+                ],
+            ),
+            FakeResponse(200, "ok", [{"conid": 265598, "symbol": "AAPL"}]),
+            FakeResponse(
+                200,
+                "ok",
+                {
+                    "data": [
+                        {
+                            "t": 1704153600000,
+                            "o": 10.0,
+                            "h": 12.0,
+                            "l": 9.0,
+                            "c": 11.0,
+                            "v": 1000,
+                        }
+                    ]
+                },
+            ),
+        ]
+    )
+    client = ibkr_rest_module.IBKRRESTTradingClient(session_factory=lambda: session)
+
+    contract = client.search_symbol("AAPL")
+    quote = client.get_quote("AAPL")
+    bars = client.get_historical_data("AAPL", duration="1 W", bar_size="1 day")
+
+    assert contract == {"conid": 265598, "symbol": "AAPL", "companyName": "APPLE INC", "description": "NASDAQ"}
+    assert quote == ibkr_rest_module.Quote(
+        conid=265598,
+        symbol="AAPL",
+        last_price=101.5,
+        bid=101.0,
+        ask=102.0,
+        volume=1500,
+        change=1.5,
+        change_pct=1.5,
+    )
+    assert bars == [
+        {
+            "date": 1704153600000,
+            "open": 10.0,
+            "high": 12.0,
+            "low": 9.0,
+            "close": 11.0,
+            "volume": 1000,
+        }
+    ]
+    assert session.calls == [
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/secdef/search",
+            {"params": {"symbol": "AAPL"}, "json": None, "timeout": 10.0, "verify": False},
+        ),
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/secdef/search",
+            {"params": {"symbol": "AAPL"}, "json": None, "timeout": 10.0, "verify": False},
+        ),
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/marketdata/snapshot",
+            {
+                "params": {"conids": 265598, "fields": "31,84,86,87,88,7762"},
+                "json": None,
+                "timeout": 10.0,
+                "verify": False,
+            },
+        ),
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/secdef/search",
+            {"params": {"symbol": "AAPL"}, "json": None, "timeout": 10.0, "verify": False},
+        ),
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/marketdata/history",
+            {
+                "params": {"conid": 265598, "period": "1w", "bar": "1d"},
+                "json": None,
+                "timeout": 10.0,
+                "verify": False,
+            },
+        ),
+    ]
