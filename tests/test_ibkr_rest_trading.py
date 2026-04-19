@@ -213,6 +213,84 @@ def test_connect_authenticates_and_sets_default_account():
     ]
 
 
+def test_connect_returns_false_when_unauthenticated_and_stops_followups():
+    session = SequencedSession([FakeResponse(200, "ok", {"authenticated": False})])
+    client = ibkr_rest_module.IBKRRESTTradingClient(session_factory=lambda: session)
+
+    assert client.connect() is False
+    assert client.is_authenticated() is False
+    assert session.calls == [
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/auth/status",
+            {"params": None, "json": None, "timeout": 10.0, "verify": False},
+        )
+    ]
+
+
+def test_get_accounts_supports_accounts_object_shape():
+    session = SequencedSession(
+        [FakeResponse(200, "ok", {"accounts": [{"id": "DU111"}, "DU222"]})]
+    )
+    client = ibkr_rest_module.IBKRRESTTradingClient(session_factory=lambda: session)
+
+    accounts = client.get_accounts()
+
+    assert accounts == [{"id": "DU111"}, {"id": "DU222"}]
+
+
+def test_connect_sets_default_account_from_string_account_payload():
+    session = SequencedSession(
+        [
+            FakeResponse(200, "ok", {"authenticated": True}),
+            FakeResponse(200, "ok", {"session": "alive"}),
+            FakeResponse(200, "ok", ["DU111", "DU222"]),
+        ]
+    )
+    client = ibkr_rest_module.IBKRRESTTradingClient(session_factory=lambda: session)
+
+    assert client.connect() is True
+    assert client.default_account_id == "DU111"
+
+
+def test_get_positions_uses_contract_desc_as_symbol_fallback():
+    session = SequencedSession(
+        [
+            FakeResponse(
+                200,
+                "ok",
+                [
+                    {
+                        "contractDesc": "SPY",
+                        "ticker": "",
+                        "conid": 756733,
+                        "position": 1,
+                        "avgCost": 500,
+                        "mktValue": 505,
+                        "unrealizedPnl": 5,
+                    }
+                ],
+            ),
+            FakeResponse(200, "ok", []),
+        ]
+    )
+    client = ibkr_rest_module.IBKRRESTTradingClient(
+        default_account_id="DU111",
+        session_factory=lambda: session,
+    )
+
+    positions = client.get_positions()
+
+    assert positions[0].symbol == "SPY"
+
+
+def test_get_balance_raises_when_no_resolvable_account():
+    client = ibkr_rest_module.IBKRRESTTradingClient()
+
+    with pytest.raises(ValueError):
+        client.get_balance()
+
+
 def test_get_balance_keeps_duplicate_tags_and_get_positions_aggregates_pages():
     summary_rows = [
         {"tag": "NetLiquidation", "value": "100000", "currency": "USD", "account": "DU111"},

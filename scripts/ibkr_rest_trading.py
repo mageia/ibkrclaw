@@ -153,18 +153,18 @@ class IBKRRESTTradingClient:
         self._authenticated = False
 
     @staticmethod
-    def _to_float(value: Any) -> Any:
+    def _parse_numeric(value: Any) -> Optional[float]:
         if value is None or isinstance(value, bool):
-            return value
+            return None
         if isinstance(value, (int, float)):
             return float(value)
         text = str(value).strip()
         if not text:
-            return value
+            return None
         try:
             return float(text.replace(",", ""))
         except ValueError:
-            return value
+            return None
 
     @staticmethod
     def _extract_account_id(account: Any) -> Optional[str]:
@@ -175,6 +175,19 @@ class IBKRRESTTradingClient:
                 account_id = account.get(key)
                 if account_id:
                     return str(account_id)
+        return None
+
+    @classmethod
+    def _normalize_account_entry(cls, account: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(account, str):
+            return {"id": account}
+        if isinstance(account, dict):
+            account_id = cls._extract_account_id(account)
+            if account_id is None:
+                return None
+            normalized = dict(account)
+            normalized.setdefault("id", account_id)
+            return normalized
         return None
 
     def _require_account_id(self, account_id: Optional[str] = None) -> str:
@@ -201,13 +214,18 @@ class IBKRRESTTradingClient:
 
     def get_accounts(self) -> List[Dict[str, Any]]:
         payload = self._request_json("GET", "/portfolio/accounts")
-        if isinstance(payload, list):
-            return [item for item in payload if isinstance(item, dict)]
+        raw_accounts: Any = payload
         if isinstance(payload, dict):
-            accounts = payload.get("accounts")
-            if isinstance(accounts, list):
-                return [item for item in accounts if isinstance(item, dict)]
-        return []
+            raw_accounts = payload.get("accounts")
+        if not isinstance(raw_accounts, list):
+            return []
+
+        normalized_accounts: List[Dict[str, Any]] = []
+        for account in raw_accounts:
+            normalized_entry = self._normalize_account_entry(account)
+            if normalized_entry is not None:
+                normalized_accounts.append(normalized_entry)
+        return normalized_accounts
 
     def get_balance(self, account_id: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
         resolved_account_id = self._require_account_id(account_id)
@@ -223,9 +241,11 @@ class IBKRRESTTradingClient:
             if not tag:
                 continue
             entries = result.setdefault(str(tag), [])
+            raw_amount = row.get("value", row.get("amount"))
+            parsed_amount = self._parse_numeric(raw_amount)
             entries.append(
                 {
-                    "amount": self._to_float(row.get("value", row.get("amount"))),
+                    "amount": parsed_amount if parsed_amount is not None else raw_amount,
                     "currency": row.get("currency"),
                     "account": row.get("account", resolved_account_id),
                 }
@@ -261,7 +281,12 @@ class IBKRRESTTradingClient:
 
                 positions.append(
                     Position(
-                        symbol=str(row.get("ticker", row.get("symbol", ""))),
+                        symbol=str(
+                            row.get("contractDesc")
+                            or row.get("ticker")
+                            or row.get("symbol")
+                            or ""
+                        ),
                         conid=int(row.get("conid", row.get("conId", 0)) or 0),
                         quantity=quantity,
                         avg_cost=avg_cost,
