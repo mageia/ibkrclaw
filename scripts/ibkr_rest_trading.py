@@ -57,6 +57,7 @@ ORDER_TYPE_FROM_REST = {
     "STOP_LIMIT": "STP_LMT",
     "STP LMT": "STP_LMT",
 }
+CONFIRMATION_MESSAGE_KEYS = ("message", "messages", "warning", "warnings", "warn", "question")
 
 
 def log_warning(context: str, error: Exception) -> None:
@@ -406,6 +407,49 @@ class IBKRRESTTradingClient:
                 return normalized
         return None
 
+    @classmethod
+    def _collect_confirmation_messages(cls, item: Dict[str, Any]) -> List[str]:
+        messages: List[str] = []
+        for key in CONFIRMATION_MESSAGE_KEYS:
+            value = item.get(key)
+            if value is None:
+                continue
+            if isinstance(value, list):
+                for child in value:
+                    text = cls._normalize_optional_text(child)
+                    if text is not None:
+                        messages.append(text)
+                continue
+            text = cls._normalize_optional_text(value)
+            if text is not None:
+                messages.append(text)
+        return messages
+
+    @classmethod
+    def _parse_endpoint_rows(
+        cls,
+        payload: Any,
+        *,
+        endpoint: str,
+        wrapper_key: str,
+    ) -> List[Dict[str, Any]]:
+        rows: Any = payload
+        if isinstance(payload, dict):
+            rows = payload.get(wrapper_key)
+            if rows is None:
+                raise RuntimeError(
+                    f"{endpoint} payload must be a list or an object containing '{wrapper_key}'"
+                )
+        if not isinstance(rows, list):
+            raise RuntimeError(f"{endpoint} payload rows must be a list")
+
+        normalized_rows: List[Dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise RuntimeError(f"{endpoint} payload rows must contain objects")
+            normalized_rows.append(row)
+        return normalized_rows
+
     def _resolve_conid(self, spec: ContractSpec) -> int:
         if spec.con_id is not None:
             conid = self._parse_int(spec.con_id)
@@ -694,12 +738,24 @@ class IBKRRESTTradingClient:
             f"/iserver/account/{account_id}/orders",
             payload=payload,
         )
+        first_item = self._first_payload_item(result)
+        confirmation_messages = self._collect_confirmation_messages(first_item)
+        if confirmation_messages:
+            print(
+                f"place_order confirmation: {' | '.join(confirmation_messages)}",
+                file=sys.stderr,
+            )
         reply_id = self._extract_reply_id(result)
         if reply_id is not None:
             result = self._request_json(
                 "POST",
                 f"/iserver/reply/{reply_id}",
                 payload={"confirmed": True},
+            )
+        elif confirmation_messages:
+            raise RuntimeError(
+                "place_order confirmation payload missing reply id: "
+                + " | ".join(confirmation_messages)
             )
         return self._trade_snapshot_from_rest(self._first_payload_item(result))
 
@@ -721,6 +777,8 @@ class IBKRRESTTradingClient:
         resolved_account_id = self._require_account_id(account_id)
         payload: Dict[str, Any] = {}
         if request.quantity is not None:
+            if request.quantity <= MIN_ORDER_QUANTITY:
+                raise ValueError("quantity must be greater than zero")
             payload["quantity"] = request.quantity
         if request.limit_price is not None and request.stop_price is not None:
             payload["orderType"] = ORDER_TYPE_TO_REST["STP_LMT"]
@@ -738,6 +796,8 @@ class IBKRRESTTradingClient:
             payload["outsideRTH"] = request.outside_rth
         if request.transmit is not None:
             payload["transmit"] = request.transmit
+        if not payload:
+            raise ValueError("modify_order requires at least one field to modify")
 
         result = self._request_json(
             "POST",
@@ -748,15 +808,24 @@ class IBKRRESTTradingClient:
 
     def get_open_orders(self) -> List[OrderSnapshot]:
         payload = self._request_json("GET", "/iserver/account/orders")
-        return [self._order_snapshot_from_rest(item) for item in self._payload_list(payload)]
+        rows = self._parse_endpoint_rows(
+            payload,
+            endpoint="/iserver/account/orders",
+            wrapper_key="orders",
+        )
+        return [self._order_snapshot_from_rest(item) for item in rows]
 
     def get_orders(self) -> List[OrderSnapshot]:
-        payload = self._request_json("GET", "/iserver/account/orders")
-        return [self._order_snapshot_from_rest(item) for item in self._payload_list(payload)]
+        return self.get_open_orders()
 
     def get_trades(self) -> List[TradeSnapshot]:
         payload = self._request_json("GET", "/iserver/account/trades")
-        return [self._trade_snapshot_from_rest(item) for item in self._payload_list(payload)]
+        rows = self._parse_endpoint_rows(
+            payload,
+            endpoint="/iserver/account/trades",
+            wrapper_key="trades",
+        )
+        return [self._trade_snapshot_from_rest(item) for item in rows]
 
     def get_fills(self) -> List[FillSnapshot]:
         fills: List[FillSnapshot] = []

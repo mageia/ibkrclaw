@@ -904,6 +904,52 @@ def test_place_order_confirms_reply_then_returns_trade_snapshot():
     ]
 
 
+def test_place_order_surfaces_confirmation_message_to_stderr(capsys):
+    session = SequencedSession(
+        [
+            FakeResponse(200, "ok", [{"conid": 265598, "symbol": "AAPL"}]),
+            FakeResponse(
+                200,
+                "ok",
+                [
+                    {
+                        "id": "reply-1",
+                        "message": ["Confirm outside regular trading hours?"],
+                    }
+                ],
+            ),
+            FakeResponse(
+                200,
+                "ok",
+                [
+                    {
+                        "orderId": 9001,
+                        "ticker": "AAPL",
+                        "secType": "STK",
+                        "side": "BUY",
+                        "orderType": "MKT",
+                    }
+                ],
+            ),
+        ]
+    )
+    client = ibkr_rest_module.IBKRRESTTradingClient(
+        default_account_id="DU111",
+        session_factory=lambda: session,
+    )
+    request = ibkr_rest_module.OrderRequest(
+        contract=ibkr_rest_module.ContractSpec(sec_type="STK", symbol="AAPL"),
+        action="BUY",
+        quantity=1,
+        order_type="MKT",
+    )
+
+    client.place_order(request)
+    captured = capsys.readouterr()
+
+    assert "Confirm outside regular trading hours?" in captured.err
+
+
 def test_cancel_modify_and_query_methods_map_rest_payloads():
     trade_row = {
         "orderId": 9001,
@@ -997,33 +1043,7 @@ def test_cancel_modify_and_query_methods_map_rest_payloads():
             exchange="NYSE",
         )
     ]
-    with pytest.raises(ValueError):
-        client._build_order_payload(
-            ibkr_rest_module.OrderRequest(
-                contract=ibkr_rest_module.ContractSpec(sec_type="STK", symbol="AAPL", con_id=0),
-                action="BUY",
-                quantity=1,
-                order_type="MKT",
-            )
-        )
-    with pytest.raises(ValueError):
-        client._build_order_payload(
-            ibkr_rest_module.OrderRequest(
-                contract=ibkr_rest_module.ContractSpec(sec_type="STK", symbol="AAPL", con_id=1),
-                action="HOLD",
-                quantity=1,
-                order_type="MKT",
-            )
-        )
-    with pytest.raises(ValueError):
-        client._build_order_payload(
-            ibkr_rest_module.OrderRequest(
-                contract=ibkr_rest_module.ContractSpec(sec_type="STK", symbol="AAPL", con_id=1),
-                action="BUY",
-                quantity=1,
-                order_type="VWAP",
-            )
-        )
+
     assert session.calls == [
         (
             "DELETE",
@@ -1068,3 +1088,71 @@ def test_cancel_modify_and_query_methods_map_rest_payloads():
             {"params": None, "json": None, "timeout": 10.0, "verify": False},
         ),
     ]
+
+
+def test_build_order_payload_rejects_invalid_conid_action_and_type():
+    client = ibkr_rest_module.IBKRRESTTradingClient(default_account_id="DU111")
+
+    with pytest.raises(ValueError):
+        client._build_order_payload(
+            ibkr_rest_module.OrderRequest(
+                contract=ibkr_rest_module.ContractSpec(sec_type="STK", symbol="AAPL", con_id=0),
+                action="BUY",
+                quantity=1,
+                order_type="MKT",
+            )
+        )
+    with pytest.raises(ValueError):
+        client._build_order_payload(
+            ibkr_rest_module.OrderRequest(
+                contract=ibkr_rest_module.ContractSpec(sec_type="STK", symbol="AAPL", con_id=1),
+                action="HOLD",
+                quantity=1,
+                order_type="MKT",
+            )
+        )
+    with pytest.raises(ValueError):
+        client._build_order_payload(
+            ibkr_rest_module.OrderRequest(
+                contract=ibkr_rest_module.ContractSpec(sec_type="STK", symbol="AAPL", con_id=1),
+                action="BUY",
+                quantity=1,
+                order_type="VWAP",
+            )
+        )
+
+
+def test_get_open_orders_raises_on_malformed_payload_structure():
+    session = SequencedSession([FakeResponse(200, "ok", {"unexpected": []})])
+    client = ibkr_rest_module.IBKRRESTTradingClient(session_factory=lambda: session)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        client.get_open_orders()
+
+    assert "/iserver/account/orders" in str(exc_info.value)
+
+
+def test_modify_order_rejects_empty_payload():
+    client = ibkr_rest_module.IBKRRESTTradingClient(
+        default_account_id="DU111",
+        session_factory=lambda: FakeSession(),
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        client.modify_order(ibkr_rest_module.ModifyOrderRequest(order_id=1))
+
+    assert "at least one field" in str(exc_info.value)
+
+
+def test_modify_order_rejects_non_positive_quantity():
+    client = ibkr_rest_module.IBKRRESTTradingClient(
+        default_account_id="DU111",
+        session_factory=lambda: FakeSession(),
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        client.modify_order(
+            ibkr_rest_module.ModifyOrderRequest(order_id=1, quantity=0, limit_price=1.0)
+        )
+
+    assert "quantity must be greater than zero" in str(exc_info.value)
