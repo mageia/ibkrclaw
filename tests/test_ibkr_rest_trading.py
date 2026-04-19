@@ -573,3 +573,137 @@ def test_get_historical_data_returns_empty_when_search_result_has_no_usable_coni
             {"params": {"symbol": "AAPL"}, "json": None, "timeout": 10.0, "verify": False},
         )
     ]
+
+
+def test_get_fundamentals_returns_partial_rest_fields_and_na_for_missing_values():
+    session = SequencedSession(
+        [
+            FakeResponse(
+                200,
+                "ok",
+                [{"conid": 265598, "symbol": "AAPL", "companyName": "APPLE INC"}],
+            ),
+            FakeResponse(
+                200,
+                "ok",
+                {
+                    "companyName": "APPLE INC",
+                    "industry": "Technology",
+                    "sectorGroup": "Hardware",
+                },
+            ),
+            FakeResponse(
+                200,
+                "ok",
+                [{"conid": 265598, "7289": "190.0", "7290": "165.0", "7282": "1200000"}],
+            ),
+        ]
+    )
+    client = ibkr_rest_module.IBKRRESTTradingClient(session_factory=lambda: session)
+
+    data = client.get_fundamentals("AAPL")
+
+    assert data == ibkr_rest_module.FundamentalData(
+        conid=265598,
+        symbol="AAPL",
+        company_name="APPLE INC",
+        industry="Technology",
+        category="Hardware",
+        market_cap="N/A",
+        pe_ratio="N/A",
+        eps="N/A",
+        dividend_yield="N/A",
+        high_52w="190.0",
+        low_52w="165.0",
+        avg_volume="1200000",
+    )
+    assert session.calls == [
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/secdef/search",
+            {"params": {"symbol": "AAPL"}, "json": None, "timeout": 10.0, "verify": False},
+        ),
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/contract/265598/info",
+            {"params": None, "json": None, "timeout": 10.0, "verify": False},
+        ),
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/marketdata/snapshot",
+            {
+                "params": {"conids": 265598, "fields": "7282,7289,7290"},
+                "json": None,
+                "timeout": 10.0,
+                "verify": False,
+            },
+        ),
+    ]
+
+
+def test_run_scanner_maps_ranked_results():
+    session = SequencedSession(
+        [
+            FakeResponse(
+                200,
+                "ok",
+                [
+                    {
+                        "rank": 1,
+                        "symbol": "AAPL",
+                        "conid": 265598,
+                        "distance": "2.5",
+                        "benchmark": "0.0",
+                        "projection": "1.2",
+                    }
+                ],
+            ),
+        ]
+    )
+    client = ibkr_rest_module.IBKRRESTTradingClient(session_factory=lambda: session)
+
+    rows = client.run_scanner(scan_type="TOP_PERC_GAIN", size=5)
+
+    assert rows == [
+        {
+            "rank": 1,
+            "symbol": "AAPL",
+            "conid": 265598,
+            "distance": "2.5",
+            "benchmark": "0.0",
+            "projection": "1.2",
+        }
+    ]
+    assert session.calls == [
+        (
+            "POST",
+            "https://localhost:5000/v1/api/iserver/scanner/run",
+            {
+                "params": None,
+                "json": {
+                    "instrument": "STK",
+                    "type": "TOP_PERC_GAIN",
+                    "location": "STK.US.MAJOR",
+                    "size": "5",
+                },
+                "timeout": 10.0,
+                "verify": False,
+            },
+        )
+    ]
+
+
+def test_get_company_news_rejects_oversized_response(monkeypatch):
+    class FakeNewsResponse:
+        status_code = 200
+        text = "x" * (ibkr_rest_module.NEWS_MAX_RESPONSE_BYTES + 1)
+        content = text.encode("utf-8")
+
+    monkeypatch.setattr(
+        ibkr_rest_module.requests,
+        "get",
+        lambda *args, **kwargs: FakeNewsResponse(),
+    )
+    client = ibkr_rest_module.IBKRRESTTradingClient()
+
+    assert client.get_company_news("LMND") == []

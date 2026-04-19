@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import os
+import sys
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -19,6 +21,12 @@ DEFAULT_VERIFY_SSL = os.getenv("IBKR_REST_VERIFY_SSL", "false").lower() in {
     "on",
 }
 QUOTE_SNAPSHOT_FIELDS = "31,84,86,87,88,7762"
+FUNDAMENTAL_SNAPSHOT_FIELDS = "7282,7289,7290"
+SCANNER_INSTRUMENT = "STK"
+SCANNER_LOCATION = "STK.US.MAJOR"
+NEWS_REQUEST_TIMEOUT_SECONDS = 10
+NEWS_USER_AGENT = "Mozilla/5.0"
+NEWS_MAX_RESPONSE_BYTES = 1_000_000
 HISTORY_PERIOD_MAP = {
     "1 D": "1d",
     "1 W": "1w",
@@ -36,6 +44,10 @@ HISTORY_BAR_MAP = {
     "1 week": "1w",
     "1 month": "1m",
 }
+
+
+def log_warning(context: str, error: Exception) -> None:
+    print(f"{context} 发生错误: {error}", file=sys.stderr)
 
 
 @dataclass(frozen=True)
@@ -388,6 +400,103 @@ class IBKRRESTTradingClient:
             change=change,
             change_pct=change_pct,
         )
+
+    def get_fundamentals(self, symbol: str) -> Optional[FundamentalData]:
+        contract = self.search_symbol(symbol)
+        if contract is None:
+            return None
+
+        conid = self._extract_conid(contract)
+        if conid is None:
+            return None
+
+        info = self._request_json("GET", f"/iserver/contract/{conid}/info")
+        snapshot = self._request_json(
+            "GET",
+            "/iserver/marketdata/snapshot",
+            params={"conids": conid, "fields": FUNDAMENTAL_SNAPSHOT_FIELDS},
+        )
+        details = info if isinstance(info, dict) else {}
+        market = snapshot[0] if isinstance(snapshot, list) and snapshot else {}
+        market_row = market if isinstance(market, dict) else {}
+
+        return FundamentalData(
+            conid=conid,
+            symbol=symbol,
+            company_name=str(details.get("companyName") or contract.get("companyName") or symbol),
+            industry=str(details.get("industry") or ""),
+            category=str(details.get("sectorGroup") or details.get("category") or ""),
+            market_cap="N/A",
+            pe_ratio="N/A",
+            eps="N/A",
+            dividend_yield="N/A",
+            high_52w=str(market_row.get("7289") or "N/A"),
+            low_52w=str(market_row.get("7290") or "N/A"),
+            avg_volume=str(market_row.get("7282") or "N/A"),
+        )
+
+    def run_scanner(self, scan_type: str = "TOP_PERC_GAIN", size: int = 10) -> List[dict]:
+        payload = {
+            "instrument": SCANNER_INSTRUMENT,
+            "type": scan_type,
+            "location": SCANNER_LOCATION,
+            "size": str(size),
+        }
+        rows = self._request_json("POST", "/iserver/scanner/run", payload=payload)
+        if not isinstance(rows, list):
+            return []
+        return [
+            {
+                "rank": row.get("rank"),
+                "symbol": row.get("symbol"),
+                "conid": row.get("conid"),
+                "distance": row.get("distance"),
+                "benchmark": row.get("benchmark"),
+                "projection": row.get("projection"),
+            }
+            for row in rows
+            if isinstance(row, dict)
+        ]
+
+    def get_company_news(self, symbol: str, limit: int = 5) -> List[dict]:
+        url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
+        headers = {"User-Agent": NEWS_USER_AGENT}
+        try:
+            response = requests.get(url, headers=headers, timeout=NEWS_REQUEST_TIMEOUT_SECONDS)
+        except Exception as err:
+            log_warning(f"get_company_news({symbol})", err)
+            return []
+
+        if response.status_code != 200:
+            log_warning(
+                f"get_company_news({symbol})",
+                RuntimeError(f"unexpected status {response.status_code}"),
+            )
+            return []
+
+        raw_content = getattr(response, "content", None)
+        if raw_content is None:
+            raw_content = (response.text or "").encode("utf-8")
+        if len(raw_content) > NEWS_MAX_RESPONSE_BYTES:
+            log_warning(
+                f"get_company_news({symbol})",
+                RuntimeError("response too large"),
+            )
+            return []
+
+        try:
+            root = ET.fromstring(response.text)
+        except Exception as err:
+            log_warning(f"get_company_news({symbol})", err)
+            return []
+
+        news: List[dict] = []
+        for item in root.findall(".//item")[:limit]:
+            title = item.find("title").text if item.find("title") is not None else ""
+            pub_date = item.find("pubDate").text if item.find("pubDate") is not None else ""
+            link = item.find("link").text if item.find("link") is not None else ""
+            news.append({"title": title, "date": pub_date, "link": link})
+        return news
 
     def get_historical_data(
         self,
