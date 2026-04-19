@@ -337,12 +337,23 @@ class IBKRRESTTradingClient:
             text = text[:-1]
         return cls._parse_numeric(text)
 
+    @classmethod
+    def _extract_conid(cls, contract: Any) -> Optional[int]:
+        if not isinstance(contract, dict):
+            return None
+        conid = cls._parse_numeric(contract.get("conid", contract.get("conId")))
+        if conid is None or conid <= 0:
+            return None
+        return int(conid)
+
     def get_quote(self, symbol: str) -> Optional[Quote]:
         contract = self.search_symbol(symbol)
         if contract is None:
             return None
 
-        conid = int(contract.get("conid", contract.get("conId", 0)) or 0)
+        conid = self._extract_conid(contract)
+        if conid is None:
+            return None
         payload = self._request_json(
             "GET",
             "/iserver/marketdata/snapshot",
@@ -369,7 +380,7 @@ class IBKRRESTTradingClient:
 
         return Quote(
             conid=conid,
-            symbol=symbol,
+            symbol=str(contract.get("symbol") or symbol),
             last_price=last_price,
             bid=bid,
             ask=ask,
@@ -387,10 +398,12 @@ class IBKRRESTTradingClient:
         contract = self.search_symbol(symbol)
         if contract is None:
             return []
+        conid = self._extract_conid(contract)
+        if conid is None:
+            return []
 
         period = HISTORY_PERIOD_MAP.get(duration, duration)
         bar = HISTORY_BAR_MAP.get(bar_size, bar_size)
-        conid = int(contract.get("conid", contract.get("conId", 0)) or 0)
         payload = self._request_json(
             "GET",
             "/iserver/marketdata/history",

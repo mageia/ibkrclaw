@@ -408,7 +408,7 @@ def test_get_balance_preserves_raw_amount_when_parse_fails():
     ]
 
 
-def test_search_symbol_get_quote_and_get_historical_data_map_rest_payloads():
+def test_search_symbol_returns_first_result_and_accepts_kwargs():
     session = SequencedSession(
         [
             FakeResponse(
@@ -423,51 +423,54 @@ def test_search_symbol_get_quote_and_get_historical_data_map_rest_payloads():
                     }
                 ],
             ),
-            FakeResponse(200, "ok", [{"conid": 265598, "symbol": "AAPL"}]),
+        ]
+    )
+    client = ibkr_rest_module.IBKRRESTTradingClient(session_factory=lambda: session)
+
+    contract = client.search_symbol("AAPL", name=True)
+
+    assert contract == {"conid": 265598, "symbol": "AAPL", "companyName": "APPLE INC", "description": "NASDAQ"}
+    assert session.calls == [
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/secdef/search",
+            {"params": {"symbol": "AAPL", "name": True}, "json": None, "timeout": 10.0, "verify": False},
+        )
+    ]
+
+
+def test_search_symbol_returns_none_when_payload_is_empty_list():
+    session = SequencedSession([FakeResponse(200, "ok", [])])
+    client = ibkr_rest_module.IBKRRESTTradingClient(session_factory=lambda: session)
+
+    assert client.search_symbol("AAPL") is None
+    assert session.calls == [
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/secdef/search",
+            {"params": {"symbol": "AAPL"}, "json": None, "timeout": 10.0, "verify": False},
+        )
+    ]
+
+
+def test_get_quote_maps_snapshot_payload_and_uses_symbol_from_search_result():
+    session = SequencedSession(
+        [
+            FakeResponse(200, "ok", [{"conid": 265598, "symbol": "AAPL.US"}]),
             FakeResponse(
                 200,
                 "ok",
-                [
-                    {
-                        "conid": 265598,
-                        "31": "101.5",
-                        "84": "101.0",
-                        "86": "102.0",
-                        "87": "1500",
-                        "88": "100.0",
-                        "7762": "1.5",
-                    }
-                ],
-            ),
-            FakeResponse(200, "ok", [{"conid": 265598, "symbol": "AAPL"}]),
-            FakeResponse(
-                200,
-                "ok",
-                {
-                    "data": [
-                        {
-                            "t": 1704153600000,
-                            "o": 10.0,
-                            "h": 12.0,
-                            "l": 9.0,
-                            "c": 11.0,
-                            "v": 1000,
-                        }
-                    ]
-                },
+                [{"conid": 265598, "31": "101.5", "84": "101.0", "86": "102.0", "87": "1500", "88": "100.0", "7762": "1.5"}],
             ),
         ]
     )
     client = ibkr_rest_module.IBKRRESTTradingClient(session_factory=lambda: session)
 
-    contract = client.search_symbol("AAPL")
     quote = client.get_quote("AAPL")
-    bars = client.get_historical_data("AAPL", duration="1 W", bar_size="1 day")
 
-    assert contract == {"conid": 265598, "symbol": "AAPL", "companyName": "APPLE INC", "description": "NASDAQ"}
     assert quote == ibkr_rest_module.Quote(
         conid=265598,
-        symbol="AAPL",
+        symbol="AAPL.US",
         last_price=101.5,
         bid=101.0,
         ask=102.0,
@@ -475,22 +478,7 @@ def test_search_symbol_get_quote_and_get_historical_data_map_rest_payloads():
         change=1.5,
         change_pct=1.5,
     )
-    assert bars == [
-        {
-            "date": 1704153600000,
-            "open": 10.0,
-            "high": 12.0,
-            "low": 9.0,
-            "close": 11.0,
-            "volume": 1000,
-        }
-    ]
     assert session.calls == [
-        (
-            "GET",
-            "https://localhost:5000/v1/api/iserver/secdef/search",
-            {"params": {"symbol": "AAPL"}, "json": None, "timeout": 10.0, "verify": False},
-        ),
         (
             "GET",
             "https://localhost:5000/v1/api/iserver/secdef/search",
@@ -506,6 +494,58 @@ def test_search_symbol_get_quote_and_get_historical_data_map_rest_payloads():
                 "verify": False,
             },
         ),
+    ]
+
+
+def test_get_quote_computes_change_pct_when_7762_missing():
+    session = SequencedSession(
+        [
+            FakeResponse(200, "ok", [{"conid": 265598, "symbol": "AAPL"}]),
+            FakeResponse(200, "ok", [{"conid": 265598, "31": "103.0", "88": "100.0", "84": "102.9", "86": "103.1", "87": "10"}]),
+        ]
+    )
+    client = ibkr_rest_module.IBKRRESTTradingClient(session_factory=lambda: session)
+
+    quote = client.get_quote("AAPL")
+
+    assert quote is not None
+    assert quote.change == 3.0
+    assert quote.change_pct == 3.0
+
+
+def test_get_quote_returns_none_when_search_result_has_no_usable_conid_and_skips_snapshot():
+    session = SequencedSession([FakeResponse(200, "ok", [{"symbol": "AAPL"}])])
+    client = ibkr_rest_module.IBKRRESTTradingClient(session_factory=lambda: session)
+
+    quote = client.get_quote("AAPL")
+
+    assert quote is None
+    assert session.calls == [
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/secdef/search",
+            {"params": {"symbol": "AAPL"}, "json": None, "timeout": 10.0, "verify": False},
+        )
+    ]
+
+
+def test_get_historical_data_maps_history_payload():
+    session = SequencedSession(
+        [
+            FakeResponse(200, "ok", [{"conid": 265598, "symbol": "AAPL"}]),
+            FakeResponse(
+                200,
+                "ok",
+                {"data": [{"t": 1704153600000, "o": 10.0, "h": 12.0, "l": 9.0, "c": 11.0, "v": 1000}]},
+            ),
+        ]
+    )
+    client = ibkr_rest_module.IBKRRESTTradingClient(session_factory=lambda: session)
+
+    bars = client.get_historical_data("AAPL", duration="1 W", bar_size="1 day")
+
+    assert bars == [{"date": 1704153600000, "open": 10.0, "high": 12.0, "low": 9.0, "close": 11.0, "volume": 1000}]
+    assert session.calls == [
         (
             "GET",
             "https://localhost:5000/v1/api/iserver/secdef/search",
@@ -514,11 +554,22 @@ def test_search_symbol_get_quote_and_get_historical_data_map_rest_payloads():
         (
             "GET",
             "https://localhost:5000/v1/api/iserver/marketdata/history",
-            {
-                "params": {"conid": 265598, "period": "1w", "bar": "1d"},
-                "json": None,
-                "timeout": 10.0,
-                "verify": False,
-            },
+            {"params": {"conid": 265598, "period": "1w", "bar": "1d"}, "json": None, "timeout": 10.0, "verify": False},
         ),
+    ]
+
+
+def test_get_historical_data_returns_empty_when_search_result_has_no_usable_conid_and_skips_history():
+    session = SequencedSession([FakeResponse(200, "ok", [{"conid": ""}])])
+    client = ibkr_rest_module.IBKRRESTTradingClient(session_factory=lambda: session)
+
+    bars = client.get_historical_data("AAPL")
+
+    assert bars == []
+    assert session.calls == [
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/secdef/search",
+            {"params": {"symbol": "AAPL"}, "json": None, "timeout": 10.0, "verify": False},
+        )
     ]
