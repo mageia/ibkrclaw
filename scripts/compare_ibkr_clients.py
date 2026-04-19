@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 from dataclasses import asdict, is_dataclass
 from typing import Any
@@ -31,10 +32,30 @@ def _compare_section(socket_value: Any, rest_value: Any) -> dict[str, Any]:
     }
 
 
+def _normalize_positions(payload: Any) -> Any:
+    normalized = _normalize_payload(payload)
+    if not isinstance(normalized, list):
+        return normalized
+    return sorted(
+        normalized,
+        key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True),
+    )
+
+
+def _load_client_classes() -> tuple[type[Any], type[Any]]:
+    module_prefix = f"{__package__}." if __package__ else ""
+    socket_module = importlib.import_module(f"{module_prefix}ibkr_trading")
+    rest_module = importlib.import_module(f"{module_prefix}ibkr_rest_trading")
+    return socket_module.IBKRTradingClient, rest_module.IBKRRESTTradingClient
+
+
 def compare_clients(socket_client: Any, rest_client: Any, *, symbol: str) -> dict[str, dict[str, Any]]:
     return {
         "balance": _compare_section(socket_client.get_balance(), rest_client.get_balance()),
-        "positions": _compare_section(socket_client.get_positions(), rest_client.get_positions()),
+        "positions": _compare_section(
+            _normalize_positions(socket_client.get_positions()),
+            _normalize_positions(rest_client.get_positions()),
+        ),
         "quote": _compare_section(socket_client.get_quote(symbol), rest_client.get_quote(symbol)),
     }
 
@@ -48,15 +69,10 @@ def _build_argument_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = _build_argument_parser().parse_args()
 
-    try:
-        from scripts.ibkr_rest_trading import IBKRRESTTradingClient
-        from scripts.ibkr_trading import IBKRTradingClient
-    except ImportError:
-        from ibkr_rest_trading import IBKRRESTTradingClient
-        from ibkr_trading import IBKRTradingClient
+    socket_client_cls, rest_client_cls = _load_client_classes()
 
-    socket_client = IBKRTradingClient()
-    rest_client = IBKRRESTTradingClient()
+    socket_client = socket_client_cls()
+    rest_client = rest_client_cls()
 
     try:
         if not socket_client.connect():
