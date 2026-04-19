@@ -230,6 +230,7 @@ class IBKRRESTTradingClient:
     def get_balance(self, account_id: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
         resolved_account_id = self._require_account_id(account_id)
         summary = self._request_json("GET", f"/portfolio/{resolved_account_id}/summary")
+        self._request_json("GET", f"/portfolio/{resolved_account_id}/ledger")
         if not isinstance(summary, list):
             return {}
 

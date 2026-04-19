@@ -320,6 +320,7 @@ def test_get_balance_keeps_duplicate_tags_and_get_positions_aggregates_pages():
     session = SequencedSession(
         [
             FakeResponse(200, "ok", summary_rows),
+            FakeResponse(200, "ok", {"USD": {"cashbalance": 12345}}),
             FakeResponse(200, "ok", first_page),
             FakeResponse(200, "ok", second_page),
             FakeResponse(200, "ok", []),
@@ -351,6 +352,11 @@ def test_get_balance_keeps_duplicate_tags_and_get_positions_aggregates_pages():
         ),
         (
             "GET",
+            "https://localhost:5000/v1/api/portfolio/DU111/ledger",
+            {"params": None, "json": None, "timeout": 10.0, "verify": False},
+        ),
+        (
+            "GET",
             "https://localhost:5000/v1/api/portfolio/DU111/positions/0",
             {"params": None, "json": None, "timeout": 10.0, "verify": False},
         ),
@@ -374,7 +380,8 @@ def test_get_balance_preserves_raw_amount_when_parse_fails():
                 200,
                 "ok",
                 [{"tag": "CustomTag", "value": "abc", "currency": "USD", "account": "DU111"}],
-            )
+            ),
+            FakeResponse(200, "ok", {"USD": {"cashbalance": 0}}),
         ]
     )
     client = ibkr_rest_module.IBKRRESTTradingClient(
@@ -387,3 +394,15 @@ def test_get_balance_preserves_raw_amount_when_parse_fails():
     assert balance == {
         "CustomTag": [{"amount": "abc", "currency": "USD", "account": "DU111"}]
     }
+    assert session.calls == [
+        (
+            "GET",
+            "https://localhost:5000/v1/api/portfolio/DU111/summary",
+            {"params": None, "json": None, "timeout": 10.0, "verify": False},
+        ),
+        (
+            "GET",
+            "https://localhost:5000/v1/api/portfolio/DU111/ledger",
+            {"params": None, "json": None, "timeout": 10.0, "verify": False},
+        ),
+    ]
