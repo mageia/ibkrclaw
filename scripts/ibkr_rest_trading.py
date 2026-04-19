@@ -44,6 +44,19 @@ HISTORY_BAR_MAP = {
     "1 week": "1w",
     "1 month": "1m",
 }
+MIN_ORDER_QUANTITY = 0
+SUPPORTED_ORDER_TYPES = {"MKT", "LMT", "STP", "STP_LMT"}
+SUPPORTED_ORDER_ACTIONS = {"BUY", "SELL"}
+ORDER_TYPE_TO_REST = {
+    "MKT": "MKT",
+    "LMT": "LMT",
+    "STP": "STP",
+    "STP_LMT": "STOP_LIMIT",
+}
+ORDER_TYPE_FROM_REST = {
+    "STOP_LIMIT": "STP_LMT",
+    "STP LMT": "STP_LMT",
+}
 
 
 def log_warning(context: str, error: Exception) -> None:
@@ -358,6 +371,169 @@ class IBKRRESTTradingClient:
             return None
         return int(conid)
 
+    @staticmethod
+    def _normalize_optional_text(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @classmethod
+    def _parse_int(cls, value: Any) -> Optional[int]:
+        parsed = cls._parse_numeric(value)
+        if parsed is None:
+            return None
+        return int(parsed)
+
+    @staticmethod
+    def _payload_list(payload: Any) -> List[dict[str, Any]]:
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            for key in ("orders", "trades", "results"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
+            return [payload]
+        return []
+
+    @classmethod
+    def _extract_reply_id(cls, payload: Any) -> Optional[str]:
+        for item in cls._payload_list(payload):
+            reply_id = item.get("id", item.get("replyId", item.get("reply_id")))
+            normalized = cls._normalize_optional_text(reply_id)
+            if normalized is not None:
+                return normalized
+        return None
+
+    def _resolve_conid(self, spec: ContractSpec) -> int:
+        if spec.con_id is not None:
+            conid = self._parse_int(spec.con_id)
+            if conid is None or conid <= 0:
+                raise ValueError("contract con_id must be a positive integer")
+            return conid
+
+        contract = self.search_symbol(spec.symbol)
+        conid = self._extract_conid(contract)
+        if conid is None:
+            raise ValueError(f"unable to resolve conid for symbol: {spec.symbol}")
+        return conid
+
+    def _build_order_payload(self, request: OrderRequest) -> Dict[str, Any]:
+        order_type = request.order_type.upper()
+        if order_type not in SUPPORTED_ORDER_TYPES:
+            raise ValueError(f"unsupported order_type: {request.order_type}")
+
+        action = request.action.upper()
+        if action not in SUPPORTED_ORDER_ACTIONS:
+            raise ValueError(f"unsupported action: {request.action}")
+
+        if request.quantity <= MIN_ORDER_QUANTITY:
+            raise ValueError("quantity must be greater than zero")
+
+        if order_type == "LMT" and request.limit_price is None:
+            raise ValueError("limit_price required for LMT order")
+        if order_type == "STP" and request.stop_price is None:
+            raise ValueError("stop_price required for STP order")
+        if order_type == "STP_LMT" and (request.limit_price is None or request.stop_price is None):
+            raise ValueError("stop_price and limit_price required for STP_LMT order")
+
+        payload: Dict[str, Any] = {
+            "conid": self._resolve_conid(request.contract),
+            "side": action,
+            "quantity": request.quantity,
+            "orderType": ORDER_TYPE_TO_REST[order_type],
+        }
+        if request.limit_price is not None:
+            payload["price"] = request.limit_price
+        if request.stop_price is not None:
+            payload["auxPrice"] = request.stop_price
+        if request.tif is not None:
+            payload["tif"] = request.tif
+        if request.outside_rth is not None:
+            payload["outsideRTH"] = request.outside_rth
+        if request.account is not None:
+            payload["account"] = request.account
+        if request.transmit is not None:
+            payload["transmit"] = request.transmit
+        return payload
+
+    def _order_snapshot_from_rest(self, item: Dict[str, Any]) -> OrderSnapshot:
+        order_type_raw = self._normalize_optional_text(
+            item.get("orderType", item.get("order_type"))
+        )
+        order_type = ORDER_TYPE_FROM_REST.get(order_type_raw or "", order_type_raw)
+        return OrderSnapshot(
+            order_id=self._parse_int(item.get("orderId", item.get("order_id", item.get("id")))),
+            perm_id=self._parse_int(item.get("permId", item.get("perm_id"))),
+            symbol=self._normalize_optional_text(
+                item.get("ticker", item.get("symbol", item.get("localSymbol")))
+            ),
+            sec_type=self._normalize_optional_text(item.get("secType", item.get("sec_type"))),
+            action=self._normalize_optional_text(item.get("side", item.get("action"))),
+            order_type=order_type,
+            total_quantity=self._parse_numeric(
+                item.get("totalSize", item.get("totalQuantity", item.get("quantity")))
+            ),
+            limit_price=self._parse_numeric(
+                item.get("price", item.get("lmtPrice", item.get("limit_price")))
+            ),
+            stop_price=self._parse_numeric(
+                item.get("auxPrice", item.get("stopPrice", item.get("stop_price")))
+            ),
+            status=self._normalize_optional_text(item.get("status", item.get("orderStatus"))),
+            filled=self._parse_numeric(
+                item.get("filledQuantity", item.get("filled", item.get("filled_qty")))
+            ),
+            remaining=self._parse_numeric(
+                item.get("remainingQuantity", item.get("remaining"))
+            ),
+            avg_fill_price=self._parse_numeric(
+                item.get("avgPrice", item.get("avgFillPrice"))
+            ),
+            last_fill_price=self._parse_numeric(
+                item.get("lastExecutionPrice", item.get("lastFillPrice"))
+            ),
+            exchange=self._normalize_optional_text(
+                item.get("listingExchange", item.get("exchange"))
+            ),
+            account=self._normalize_optional_text(
+                item.get("acct", item.get("account", item.get("accountId")))
+            ),
+            time=self._normalize_optional_text(
+                item.get("lastExecutionTime", item.get("time"))
+            ),
+        )
+
+    def _fill_snapshot_from_rest(self, item: Dict[str, Any]) -> FillSnapshot:
+        return FillSnapshot(
+            execution_id=self._normalize_optional_text(
+                item.get("execId", item.get("execution_id", item.get("executionId")))
+            ),
+            time=self._normalize_optional_text(item.get("time")),
+            price=self._parse_numeric(item.get("price")),
+            quantity=self._parse_numeric(item.get("shares", item.get("quantity"))),
+            exchange=self._normalize_optional_text(item.get("exchange")),
+        )
+
+    def _trade_snapshot_from_rest(self, item: Dict[str, Any]) -> TradeSnapshot:
+        execution_rows = item.get("execution", item.get("executions", item.get("fills", [])))
+        if isinstance(execution_rows, dict):
+            execution_rows = [execution_rows]
+        fills = [
+            self._fill_snapshot_from_rest(fill)
+            for fill in execution_rows
+            if isinstance(fill, dict)
+        ]
+        return TradeSnapshot(order=self._order_snapshot_from_rest(item), fills=fills)
+
+    @classmethod
+    def _first_payload_item(cls, payload: Any) -> Dict[str, Any]:
+        rows = cls._payload_list(payload)
+        if not rows:
+            raise RuntimeError("empty response payload")
+        return rows[0]
+
     def get_quote(self, symbol: str) -> Optional[Quote]:
         contract = self.search_symbol(symbol)
         if contract is None:
@@ -509,6 +685,84 @@ class IBKRRESTTradingClient:
             link = item.find("link").text if item.find("link") is not None else ""
             news.append({"title": title, "date": pub_date, "link": link})
         return news
+
+    def place_order(self, request: OrderRequest) -> TradeSnapshot:
+        account_id = self._require_account_id(request.account)
+        payload = {"orders": [self._build_order_payload(request)]}
+        result = self._request_json(
+            "POST",
+            f"/iserver/account/{account_id}/orders",
+            payload=payload,
+        )
+        reply_id = self._extract_reply_id(result)
+        if reply_id is not None:
+            result = self._request_json(
+                "POST",
+                f"/iserver/reply/{reply_id}",
+                payload={"confirmed": True},
+            )
+        return self._trade_snapshot_from_rest(self._first_payload_item(result))
+
+    def cancel_order(self, order_id: int, account_id: Optional[str] = None) -> Dict[str, Any]:
+        resolved_account_id = self._require_account_id(account_id)
+        payload = self._request_json(
+            "DELETE",
+            f"/iserver/account/{resolved_account_id}/order/{order_id}",
+        )
+        if not isinstance(payload, dict):
+            raise RuntimeError("cancel_order response must be an object")
+        return payload
+
+    def modify_order(
+        self,
+        request: ModifyOrderRequest,
+        account_id: Optional[str] = None,
+    ) -> TradeSnapshot:
+        resolved_account_id = self._require_account_id(account_id)
+        payload: Dict[str, Any] = {}
+        if request.quantity is not None:
+            payload["quantity"] = request.quantity
+        if request.limit_price is not None and request.stop_price is not None:
+            payload["orderType"] = ORDER_TYPE_TO_REST["STP_LMT"]
+        elif request.limit_price is not None:
+            payload["orderType"] = ORDER_TYPE_TO_REST["LMT"]
+        elif request.stop_price is not None:
+            payload["orderType"] = ORDER_TYPE_TO_REST["STP"]
+        if request.limit_price is not None:
+            payload["price"] = request.limit_price
+        if request.stop_price is not None:
+            payload["auxPrice"] = request.stop_price
+        if request.tif is not None:
+            payload["tif"] = request.tif
+        if request.outside_rth is not None:
+            payload["outsideRTH"] = request.outside_rth
+        if request.transmit is not None:
+            payload["transmit"] = request.transmit
+
+        result = self._request_json(
+            "POST",
+            f"/iserver/account/{resolved_account_id}/order/{request.order_id}",
+            payload=payload,
+        )
+        return self._trade_snapshot_from_rest(self._first_payload_item(result))
+
+    def get_open_orders(self) -> List[OrderSnapshot]:
+        payload = self._request_json("GET", "/iserver/account/orders")
+        return [self._order_snapshot_from_rest(item) for item in self._payload_list(payload)]
+
+    def get_orders(self) -> List[OrderSnapshot]:
+        payload = self._request_json("GET", "/iserver/account/orders")
+        return [self._order_snapshot_from_rest(item) for item in self._payload_list(payload)]
+
+    def get_trades(self) -> List[TradeSnapshot]:
+        payload = self._request_json("GET", "/iserver/account/trades")
+        return [self._trade_snapshot_from_rest(item) for item in self._payload_list(payload)]
+
+    def get_fills(self) -> List[FillSnapshot]:
+        fills: List[FillSnapshot] = []
+        for trade in self.get_trades():
+            fills.extend(trade.fills)
+        return fills
 
     def get_historical_data(
         self,

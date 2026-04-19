@@ -796,3 +796,275 @@ def test_get_company_news_parses_rss_items_and_applies_limit(monkeypatch):
     news = client.get_company_news("AAPL", limit=1)
 
     assert news == [{"title": "A", "date": "D1", "link": "https://example.com/a"}]
+
+
+def test_place_order_confirms_reply_then_returns_trade_snapshot():
+    session = SequencedSession(
+        [
+            FakeResponse(200, "ok", [{"conid": 265598, "symbol": "AAPL"}]),
+            FakeResponse(200, "ok", [{"id": "reply-1"}]),
+            FakeResponse(
+                200,
+                "ok",
+                [
+                    {
+                        "orderId": 9001,
+                        "permId": 8001,
+                        "ticker": "AAPL",
+                        "secType": "STK",
+                        "side": "BUY",
+                        "orderType": "LMT",
+                        "totalSize": "10",
+                        "price": "180.5",
+                        "status": "Submitted",
+                        "filledQuantity": "0",
+                        "remainingQuantity": "10",
+                        "avgPrice": "0",
+                        "lastExecutionPrice": "0",
+                        "listingExchange": "SMART",
+                        "acct": "DU111",
+                        "lastExecutionTime": "2026-04-19T10:00:00Z",
+                        "execution": [],
+                    }
+                ],
+            ),
+        ]
+    )
+    client = ibkr_rest_module.IBKRRESTTradingClient(
+        default_account_id="DU111",
+        session_factory=lambda: session,
+    )
+    request = ibkr_rest_module.OrderRequest(
+        contract=ibkr_rest_module.ContractSpec(sec_type="STK", symbol="AAPL"),
+        action="BUY",
+        quantity=10,
+        order_type="LMT",
+        limit_price=180.5,
+        tif="DAY",
+        outside_rth=True,
+    )
+
+    snapshot = client.place_order(request)
+
+    assert snapshot == ibkr_rest_module.TradeSnapshot(
+        order=ibkr_rest_module.OrderSnapshot(
+            order_id=9001,
+            perm_id=8001,
+            symbol="AAPL",
+            sec_type="STK",
+            action="BUY",
+            order_type="LMT",
+            total_quantity=10.0,
+            limit_price=180.5,
+            stop_price=None,
+            status="Submitted",
+            filled=0.0,
+            remaining=10.0,
+            avg_fill_price=0.0,
+            last_fill_price=0.0,
+            exchange="SMART",
+            account="DU111",
+            time="2026-04-19T10:00:00Z",
+        ),
+        fills=[],
+    )
+    assert session.calls == [
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/secdef/search",
+            {"params": {"symbol": "AAPL"}, "json": None, "timeout": 10.0, "verify": False},
+        ),
+        (
+            "POST",
+            "https://localhost:5000/v1/api/iserver/account/DU111/orders",
+            {
+                "params": None,
+                "json": {
+                    "orders": [
+                        {
+                            "conid": 265598,
+                            "side": "BUY",
+                            "quantity": 10,
+                            "orderType": "LMT",
+                            "price": 180.5,
+                            "tif": "DAY",
+                            "outsideRTH": True,
+                        }
+                    ]
+                },
+                "timeout": 10.0,
+                "verify": False,
+            },
+        ),
+        (
+            "POST",
+            "https://localhost:5000/v1/api/iserver/reply/reply-1",
+            {"params": None, "json": {"confirmed": True}, "timeout": 10.0, "verify": False},
+        ),
+    ]
+
+
+def test_cancel_modify_and_query_methods_map_rest_payloads():
+    trade_row = {
+        "orderId": 9001,
+        "permId": 8001,
+        "ticker": "AAPL",
+        "secType": "STK",
+        "side": "SELL",
+        "orderType": "STOP_LIMIT",
+        "totalSize": "12",
+        "price": "181.0",
+        "auxPrice": "179.0",
+        "status": "Submitted",
+        "filledQuantity": "5",
+        "remainingQuantity": "7",
+        "avgPrice": "180.2",
+        "lastExecutionPrice": "180.1",
+        "listingExchange": "SMART",
+        "acct": "DU111",
+        "lastExecutionTime": "2026-04-19T10:05:00Z",
+        "execution": [
+            {
+                "execId": "E-1",
+                "time": "2026-04-19T10:04:00Z",
+                "price": "180.1",
+                "shares": "5",
+                "exchange": "NYSE",
+            }
+        ],
+    }
+    open_row = {
+        "orderId": 9002,
+        "permId": 8002,
+        "ticker": "TSLA",
+        "secType": "STK",
+        "side": "BUY",
+        "orderType": "MKT",
+        "totalSize": "2",
+        "status": "PreSubmitted",
+        "filledQuantity": "0",
+        "remainingQuantity": "2",
+        "listingExchange": "SMART",
+        "acct": "DU111",
+        "lastExecutionTime": "2026-04-19T10:06:00Z",
+    }
+    session = SequencedSession(
+        [
+            FakeResponse(200, "ok", {"order_id": 9001, "status": "cancelled"}),
+            FakeResponse(200, "ok", [trade_row]),
+            FakeResponse(200, "ok", {"orders": [open_row]}),
+            FakeResponse(200, "ok", [open_row]),
+            FakeResponse(200, "ok", [trade_row]),
+            FakeResponse(200, "ok", [trade_row]),
+        ]
+    )
+    client = ibkr_rest_module.IBKRRESTTradingClient(
+        default_account_id="DU111",
+        session_factory=lambda: session,
+    )
+
+    cancel_payload = client.cancel_order(9001)
+    modified = client.modify_order(
+        ibkr_rest_module.ModifyOrderRequest(
+            order_id=9001,
+            quantity=12,
+            limit_price=181.0,
+            stop_price=179.0,
+            tif="GTC",
+            outside_rth=False,
+        )
+    )
+    open_orders = client.get_open_orders()
+    orders = client.get_orders()
+    trades = client.get_trades()
+    fills = client.get_fills()
+
+    assert cancel_payload == {"order_id": 9001, "status": "cancelled"}
+    assert modified.order.order_type == "STP_LMT"
+    assert modified.order.action == "SELL"
+    assert modified.order.limit_price == 181.0
+    assert modified.order.stop_price == 179.0
+    assert len(modified.fills) == 1
+    assert open_orders[0].order_id == 9002
+    assert orders[0].symbol == "TSLA"
+    assert trades[0].order.order_id == 9001
+    assert fills == [
+        ibkr_rest_module.FillSnapshot(
+            execution_id="E-1",
+            time="2026-04-19T10:04:00Z",
+            price=180.1,
+            quantity=5.0,
+            exchange="NYSE",
+        )
+    ]
+    with pytest.raises(ValueError):
+        client._build_order_payload(
+            ibkr_rest_module.OrderRequest(
+                contract=ibkr_rest_module.ContractSpec(sec_type="STK", symbol="AAPL", con_id=0),
+                action="BUY",
+                quantity=1,
+                order_type="MKT",
+            )
+        )
+    with pytest.raises(ValueError):
+        client._build_order_payload(
+            ibkr_rest_module.OrderRequest(
+                contract=ibkr_rest_module.ContractSpec(sec_type="STK", symbol="AAPL", con_id=1),
+                action="HOLD",
+                quantity=1,
+                order_type="MKT",
+            )
+        )
+    with pytest.raises(ValueError):
+        client._build_order_payload(
+            ibkr_rest_module.OrderRequest(
+                contract=ibkr_rest_module.ContractSpec(sec_type="STK", symbol="AAPL", con_id=1),
+                action="BUY",
+                quantity=1,
+                order_type="VWAP",
+            )
+        )
+    assert session.calls == [
+        (
+            "DELETE",
+            "https://localhost:5000/v1/api/iserver/account/DU111/order/9001",
+            {"params": None, "json": None, "timeout": 10.0, "verify": False},
+        ),
+        (
+            "POST",
+            "https://localhost:5000/v1/api/iserver/account/DU111/order/9001",
+            {
+                "params": None,
+                "json": {
+                    "quantity": 12,
+                    "orderType": "STOP_LIMIT",
+                    "price": 181.0,
+                    "auxPrice": 179.0,
+                    "tif": "GTC",
+                    "outsideRTH": False,
+                },
+                "timeout": 10.0,
+                "verify": False,
+            },
+        ),
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/account/orders",
+            {"params": None, "json": None, "timeout": 10.0, "verify": False},
+        ),
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/account/orders",
+            {"params": None, "json": None, "timeout": 10.0, "verify": False},
+        ),
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/account/trades",
+            {"params": None, "json": None, "timeout": 10.0, "verify": False},
+        ),
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/account/trades",
+            {"params": None, "json": None, "timeout": 10.0, "verify": False},
+        ),
+    ]
