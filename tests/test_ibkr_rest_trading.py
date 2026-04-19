@@ -641,6 +641,68 @@ def test_get_fundamentals_returns_partial_rest_fields_and_na_for_missing_values(
     ]
 
 
+def test_get_fundamentals_returns_partial_data_when_snapshot_request_fails():
+    session = SequencedSession(
+        [
+            FakeResponse(
+                200,
+                "ok",
+                [{"conid": 265598, "symbol": "AAPL", "companyName": "APPLE INC"}],
+            ),
+            FakeResponse(
+                200,
+                "ok",
+                {
+                    "companyName": "APPLE INC",
+                    "industry": "Technology",
+                    "sectorGroup": "Hardware",
+                },
+            ),
+            FakeResponse(500, "snapshot failed", {"error": "snapshot failed"}),
+        ]
+    )
+    client = ibkr_rest_module.IBKRRESTTradingClient(session_factory=lambda: session)
+
+    data = client.get_fundamentals("AAPL")
+
+    assert data == ibkr_rest_module.FundamentalData(
+        conid=265598,
+        symbol="AAPL",
+        company_name="APPLE INC",
+        industry="Technology",
+        category="Hardware",
+        market_cap="N/A",
+        pe_ratio="N/A",
+        eps="N/A",
+        dividend_yield="N/A",
+        high_52w="N/A",
+        low_52w="N/A",
+        avg_volume="N/A",
+    )
+    assert session.calls == [
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/secdef/search",
+            {"params": {"symbol": "AAPL"}, "json": None, "timeout": 10.0, "verify": False},
+        ),
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/contract/265598/info",
+            {"params": None, "json": None, "timeout": 10.0, "verify": False},
+        ),
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/marketdata/snapshot",
+            {
+                "params": {"conids": 265598, "fields": "7282,7289,7290"},
+                "json": None,
+                "timeout": 10.0,
+                "verify": False,
+            },
+        ),
+    ]
+
+
 def test_run_scanner_maps_ranked_results():
     session = SequencedSession(
         [
@@ -707,3 +769,30 @@ def test_get_company_news_rejects_oversized_response(monkeypatch):
     client = ibkr_rest_module.IBKRRESTTradingClient()
 
     assert client.get_company_news("LMND") == []
+
+
+def test_get_company_news_parses_rss_items_and_applies_limit(monkeypatch):
+    xml_text = """
+    <rss>
+      <channel>
+        <item><title>A</title><pubDate>D1</pubDate><link>https://example.com/a</link></item>
+        <item><title>B</title><pubDate>D2</pubDate><link>https://example.com/b</link></item>
+      </channel>
+    </rss>
+    """
+
+    class FakeNewsResponse:
+        status_code = 200
+        text = xml_text
+        content = xml_text.encode("utf-8")
+
+    monkeypatch.setattr(
+        ibkr_rest_module.requests,
+        "get",
+        lambda *args, **kwargs: FakeNewsResponse(),
+    )
+    client = ibkr_rest_module.IBKRRESTTradingClient()
+
+    news = client.get_company_news("AAPL", limit=1)
+
+    assert news == [{"title": "A", "date": "D1", "link": "https://example.com/a"}]

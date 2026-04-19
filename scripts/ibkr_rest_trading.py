@@ -410,15 +410,27 @@ class IBKRRESTTradingClient:
         if conid is None:
             return None
 
-        info = self._request_json("GET", f"/iserver/contract/{conid}/info")
-        snapshot = self._request_json(
-            "GET",
-            "/iserver/marketdata/snapshot",
-            params={"conids": conid, "fields": FUNDAMENTAL_SNAPSHOT_FIELDS},
-        )
-        details = info if isinstance(info, dict) else {}
-        market = snapshot[0] if isinstance(snapshot, list) and snapshot else {}
-        market_row = market if isinstance(market, dict) else {}
+        details: dict[str, Any] = {}
+        market_row: dict[str, Any] = {}
+
+        try:
+            info = self._request_json("GET", f"/iserver/contract/{conid}/info")
+            if isinstance(info, dict):
+                details = info
+        except Exception as err:
+            log_warning(f"get_fundamentals({symbol}) info", err)
+
+        try:
+            snapshot = self._request_json(
+                "GET",
+                "/iserver/marketdata/snapshot",
+                params={"conids": conid, "fields": FUNDAMENTAL_SNAPSHOT_FIELDS},
+            )
+            market = snapshot[0] if isinstance(snapshot, list) and snapshot else {}
+            if isinstance(market, dict):
+                market_row = market
+        except Exception as err:
+            log_warning(f"get_fundamentals({symbol}) snapshot", err)
 
         return FundamentalData(
             conid=conid,
