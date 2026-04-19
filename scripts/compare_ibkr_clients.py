@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import importlib
 import json
 from dataclasses import asdict, is_dataclass
@@ -42,7 +43,15 @@ def _normalize_positions(payload: Any) -> Any:
     )
 
 
+def _ensure_event_loop() -> None:
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+
 def _load_client_classes() -> tuple[type[Any], type[Any]]:
+    _ensure_event_loop()
     module_prefix = f"{__package__}." if __package__ else ""
     socket_module = importlib.import_module(f"{module_prefix}ibkr_trading")
     rest_module = importlib.import_module(f"{module_prefix}ibkr_rest_trading")

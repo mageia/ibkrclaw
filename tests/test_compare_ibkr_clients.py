@@ -3,6 +3,8 @@ from importlib import util
 import json
 from pathlib import Path
 import sys
+import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -220,3 +222,47 @@ def test_main_disconnects_both_clients_in_finally_on_connect_failure(monkeypatch
         "socket_disconnected": True,
         "rest_disconnected": True,
     }
+
+
+def test_load_client_classes_creates_event_loop_before_import(monkeypatch):
+    module = _load_compare_module()
+
+    class FakeSocketClient:
+        pass
+
+    class FakeRESTClient:
+        pass
+
+    try:
+        original_loop = asyncio.get_event_loop()
+        had_original_loop = True
+    except RuntimeError:
+        original_loop = None
+        had_original_loop = False
+
+    asyncio.set_event_loop(None)
+
+    def fake_import_module(name: str):
+        asyncio.get_event_loop()
+        if name.endswith("ibkr_trading"):
+            return SimpleNamespace(IBKRTradingClient=FakeSocketClient)
+        if name.endswith("ibkr_rest_trading"):
+            return SimpleNamespace(IBKRRESTTradingClient=FakeRESTClient)
+        raise AssertionError(f"unexpected import: {name}")
+
+    monkeypatch.setattr(module.importlib, "import_module", fake_import_module)
+
+    created_loop = None
+    try:
+        socket_cls, rest_cls = module._load_client_classes()
+        created_loop = asyncio.get_event_loop()
+    finally:
+        if created_loop is not None and created_loop is not original_loop:
+            created_loop.close()
+        if had_original_loop:
+            asyncio.set_event_loop(original_loop)
+        else:
+            asyncio.set_event_loop(None)
+
+    assert socket_cls is FakeSocketClient
+    assert rest_cls is FakeRESTClient
