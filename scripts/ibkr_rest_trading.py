@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import requests
 
@@ -150,6 +150,128 @@ class IBKRRESTTradingClient:
         self.timeout_seconds = timeout_seconds
         self.verify_ssl = verify_ssl
         self.session = session_factory()
+        self._authenticated = False
+
+    @staticmethod
+    def _to_float(value: Any) -> Any:
+        if value is None or isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value).strip()
+        if not text:
+            return value
+        try:
+            return float(text.replace(",", ""))
+        except ValueError:
+            return value
+
+    @staticmethod
+    def _extract_account_id(account: Any) -> Optional[str]:
+        if isinstance(account, str):
+            return account
+        if isinstance(account, dict):
+            for key in ("id", "accountId", "account"):
+                account_id = account.get(key)
+                if account_id:
+                    return str(account_id)
+        return None
+
+    def _require_account_id(self, account_id: Optional[str] = None) -> str:
+        resolved_account_id = account_id or self.default_account_id
+        if not resolved_account_id:
+            raise ValueError("account_id is required")
+        return resolved_account_id
+
+    def connect(self) -> bool:
+        status = self._request_json("GET", "/iserver/auth/status")
+        authenticated = bool(status.get("authenticated")) if isinstance(status, dict) else False
+        self._authenticated = authenticated
+        if not authenticated:
+            return False
+
+        self._request_json("POST", "/tickle")
+        accounts = self.get_accounts()
+        if not self.default_account_id and accounts:
+            self.default_account_id = self._extract_account_id(accounts[0])
+        return True
+
+    def is_authenticated(self) -> bool:
+        return self._authenticated
+
+    def get_accounts(self) -> List[Dict[str, Any]]:
+        payload = self._request_json("GET", "/portfolio/accounts")
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            accounts = payload.get("accounts")
+            if isinstance(accounts, list):
+                return [item for item in accounts if isinstance(item, dict)]
+        return []
+
+    def get_balance(self, account_id: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
+        resolved_account_id = self._require_account_id(account_id)
+        summary = self._request_json("GET", f"/portfolio/{resolved_account_id}/summary")
+        if not isinstance(summary, list):
+            return {}
+
+        result: Dict[str, List[Dict[str, Any]]] = {}
+        for row in summary:
+            if not isinstance(row, dict):
+                continue
+            tag = row.get("tag")
+            if not tag:
+                continue
+            entries = result.setdefault(str(tag), [])
+            entries.append(
+                {
+                    "amount": self._to_float(row.get("value", row.get("amount"))),
+                    "currency": row.get("currency"),
+                    "account": row.get("account", resolved_account_id),
+                }
+            )
+        return result
+
+    def get_positions(self, account_id: Optional[str] = None) -> List[Position]:
+        resolved_account_id = self._require_account_id(account_id)
+        positions: List[Position] = []
+        page_id = 0
+
+        while True:
+            page = self._request_json(
+                "GET",
+                f"/portfolio/{resolved_account_id}/positions/{page_id}",
+            )
+            if not page:
+                break
+            if not isinstance(page, list):
+                raise RuntimeError("positions payload must be a list")
+
+            for row in page:
+                if not isinstance(row, dict):
+                    continue
+                quantity = float(row.get("position", 0) or 0)
+                avg_cost = float(row.get("avgCost", 0) or 0)
+                market_value = float(row.get("mktValue", row.get("marketValue", 0)) or 0)
+                unrealized_pnl = float(
+                    row.get("unrealizedPnl", row.get("unrealizedPNL", 0)) or 0
+                )
+                cost_basis = avg_cost * quantity
+                pnl_percent = (unrealized_pnl / abs(cost_basis) * 100) if cost_basis else 0.0
+
+                positions.append(
+                    Position(
+                        symbol=str(row.get("ticker", row.get("symbol", ""))),
+                        conid=int(row.get("conid", row.get("conId", 0)) or 0),
+                        quantity=quantity,
+                        avg_cost=avg_cost,
+                        market_value=market_value,
+                        unrealized_pnl=unrealized_pnl,
+                        pnl_percent=pnl_percent,
+                    )
+                )
+            page_id += 1
+        return positions
 
     def _request_json(
         self,

@@ -56,6 +56,22 @@ class CapturingSession:
         self.closed = True
 
 
+class SequencedSession:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+        self.closed = False
+
+    def request(self, method, url, **kwargs):
+        if not self.responses:
+            raise AssertionError(f"unexpected request: {method} {url}")
+        self.calls.append((method, url, kwargs))
+        return self.responses.pop(0)
+
+    def close(self):
+        self.closed = True
+
+
 def test_load_module_does_not_leave_sys_modules_entry():
     assert "ibkr_rest_trading" not in sys.modules
 
@@ -153,3 +169,121 @@ def test_disconnect_closes_injected_session():
 
 def test_default_timeout_is_float():
     assert isinstance(ibkr_rest_module.DEFAULT_TIMEOUT_SECONDS, float)
+
+
+def test_connect_authenticates_and_sets_default_account():
+    session = SequencedSession(
+        [
+            FakeResponse(200, "ok", {"authenticated": True}),
+            FakeResponse(200, "ok", {"session": "alive"}),
+            FakeResponse(200, "ok", [{"id": "DU111"}, {"id": "DU222"}]),
+        ]
+    )
+    client = ibkr_rest_module.IBKRRESTTradingClient(
+        base_url="https://localhost:5000/v1/api",
+        session_factory=lambda: session,
+    )
+
+    assert client.is_authenticated() is False
+    assert client.connect() is True
+    assert client.is_authenticated() is True
+    assert client.default_account_id == "DU111"
+    assert client._require_account_id() == "DU111"
+    assert client._require_account_id("DU999") == "DU999"
+
+    with pytest.raises(ValueError):
+        ibkr_rest_module.IBKRRESTTradingClient()._require_account_id()
+
+    assert session.calls == [
+        (
+            "GET",
+            "https://localhost:5000/v1/api/iserver/auth/status",
+            {"params": None, "json": None, "timeout": 10.0, "verify": False},
+        ),
+        (
+            "POST",
+            "https://localhost:5000/v1/api/tickle",
+            {"params": None, "json": None, "timeout": 10.0, "verify": False},
+        ),
+        (
+            "GET",
+            "https://localhost:5000/v1/api/portfolio/accounts",
+            {"params": None, "json": None, "timeout": 10.0, "verify": False},
+        ),
+    ]
+
+
+def test_get_balance_keeps_duplicate_tags_and_get_positions_aggregates_pages():
+    summary_rows = [
+        {"tag": "NetLiquidation", "value": "100000", "currency": "USD", "account": "DU111"},
+        {"tag": "NetLiquidation", "value": "90000", "currency": "EUR", "account": "DU111"},
+        {"tag": "NetLiquidation", "value": "100000", "currency": "USD", "account": "DU111"},
+    ]
+    first_page = [
+        {
+            "ticker": "AAPL",
+            "conid": 265598,
+            "position": 10,
+            "avgCost": 100,
+            "mktValue": 1200,
+            "unrealizedPnl": 200,
+        }
+    ]
+    second_page = [
+        {
+            "ticker": "TSLA",
+            "conid": 76792991,
+            "position": -2,
+            "avgCost": 250,
+            "mktValue": -460,
+            "unrealizedPnl": 40,
+        }
+    ]
+    session = SequencedSession(
+        [
+            FakeResponse(200, "ok", summary_rows),
+            FakeResponse(200, "ok", first_page),
+            FakeResponse(200, "ok", second_page),
+            FakeResponse(200, "ok", []),
+        ]
+    )
+    client = ibkr_rest_module.IBKRRESTTradingClient(
+        default_account_id="DU111",
+        session_factory=lambda: session,
+    )
+
+    balance = client.get_balance()
+    positions = client.get_positions()
+
+    assert balance == {
+        "NetLiquidation": [
+            {"amount": 100000.0, "currency": "USD", "account": "DU111"},
+            {"amount": 90000.0, "currency": "EUR", "account": "DU111"},
+            {"amount": 100000.0, "currency": "USD", "account": "DU111"},
+        ]
+    }
+    assert [position.symbol for position in positions] == ["AAPL", "TSLA"]
+    assert positions[0].pnl_percent == pytest.approx(20.0)
+    assert positions[1].pnl_percent == pytest.approx(8.0)
+    assert session.calls == [
+        (
+            "GET",
+            "https://localhost:5000/v1/api/portfolio/DU111/summary",
+            {"params": None, "json": None, "timeout": 10.0, "verify": False},
+        ),
+        (
+            "GET",
+            "https://localhost:5000/v1/api/portfolio/DU111/positions/0",
+            {"params": None, "json": None, "timeout": 10.0, "verify": False},
+        ),
+        (
+            "GET",
+            "https://localhost:5000/v1/api/portfolio/DU111/positions/1",
+            {"params": None, "json": None, "timeout": 10.0, "verify": False},
+        ),
+        (
+            "GET",
+            "https://localhost:5000/v1/api/portfolio/DU111/positions/2",
+            {"params": None, "json": None, "timeout": 10.0, "verify": False},
+        ),
+    ]
