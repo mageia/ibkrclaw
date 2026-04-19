@@ -11,7 +11,7 @@ import requests
 
 
 DEFAULT_BASE_URL = os.getenv("IBKR_REST_BASE_URL", "https://localhost:5000/v1/api")
-DEFAULT_TIMEOUT_SECONDS = int(os.getenv("IBKR_REST_TIMEOUT_SECONDS", "10"))
+DEFAULT_TIMEOUT_SECONDS = float(os.getenv("IBKR_REST_TIMEOUT_SECONDS", "10"))
 DEFAULT_VERIFY_SSL = os.getenv("IBKR_REST_VERIFY_SSL", "false").lower() in {
     "1",
     "true",
@@ -141,7 +141,7 @@ class IBKRRESTTradingClient:
         self,
         base_url: str = DEFAULT_BASE_URL,
         default_account_id: Optional[str] = None,
-        timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         verify_ssl: bool = DEFAULT_VERIFY_SSL,
         session_factory: Callable[[], requests.Session] = requests.Session,
     ) -> None:
@@ -157,14 +157,14 @@ class IBKRRESTTradingClient:
         path: str,
         *,
         params: Optional[dict[str, Any]] = None,
-        json_body: Optional[dict[str, Any]] = None,
+        payload: Optional[dict[str, Any]] = None,
     ) -> Any:
         normalized_method = method.upper()
         response = self.session.request(
             normalized_method,
             f"{self.base_url}{path}",
             params=params,
-            json=json_body,
+            json=payload,
             timeout=self.timeout_seconds,
             verify=self.verify_ssl,
         )

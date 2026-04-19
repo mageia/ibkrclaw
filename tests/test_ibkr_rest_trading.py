@@ -78,7 +78,7 @@ def test_request_json_assembles_request_and_returns_json_payload():
     session = CapturingSession(response)
     client = ibkr_rest_module.IBKRRESTTradingClient(
         base_url="https://localhost:5000/v1/api/",
-        timeout_seconds=42,
+        timeout_seconds=42.5,
         verify_ssl=True,
         session_factory=lambda: session,
     )
@@ -87,7 +87,7 @@ def test_request_json_assembles_request_and_returns_json_payload():
         "get",
         "/portfolio/accounts",
         params={"currency": "USD"},
-        json_body={"includeClosed": False},
+        payload={"includeClosed": False},
     )
 
     assert payload == {"result": "success"}
@@ -98,7 +98,7 @@ def test_request_json_assembles_request_and_returns_json_payload():
             {
                 "params": {"currency": "USD"},
                 "json": {"includeClosed": False},
-                "timeout": 42,
+                "timeout": 42.5,
                 "verify": True,
             },
         )
@@ -140,3 +140,16 @@ def test_position_is_immutable():
 
     with pytest.raises(FrozenInstanceError):
         position.quantity = 2.0
+
+
+def test_disconnect_closes_injected_session():
+    session = FakeSession()
+    client = ibkr_rest_module.IBKRRESTTradingClient(session_factory=lambda: session)
+
+    client.disconnect()
+
+    assert session.closed is True
+
+
+def test_default_timeout_is_float():
+    assert isinstance(ibkr_rest_module.DEFAULT_TIMEOUT_SECONDS, float)
