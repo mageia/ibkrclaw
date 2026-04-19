@@ -20,7 +20,7 @@ DEFAULT_VERIFY_SSL = os.getenv("IBKR_REST_VERIFY_SSL", "false").lower() in {
 }
 
 
-@dataclass
+@dataclass(frozen=True)
 class Position:
     symbol: str
     conid: int
@@ -31,7 +31,7 @@ class Position:
     pnl_percent: float
 
 
-@dataclass
+@dataclass(frozen=True)
 class Quote:
     conid: int
     symbol: str
@@ -43,7 +43,7 @@ class Quote:
     change_pct: float
 
 
-@dataclass
+@dataclass(frozen=True)
 class FundamentalData:
     conid: int
     symbol: str
