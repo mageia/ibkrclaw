@@ -365,3 +365,25 @@ def test_get_balance_keeps_duplicate_tags_and_get_positions_aggregates_pages():
             {"params": None, "json": None, "timeout": 10.0, "verify": False},
         ),
     ]
+
+
+def test_get_balance_preserves_raw_amount_when_parse_fails():
+    session = SequencedSession(
+        [
+            FakeResponse(
+                200,
+                "ok",
+                [{"tag": "CustomTag", "value": "abc", "currency": "USD", "account": "DU111"}],
+            )
+        ]
+    )
+    client = ibkr_rest_module.IBKRRESTTradingClient(
+        default_account_id="DU111",
+        session_factory=lambda: session,
+    )
+
+    balance = client.get_balance()
+
+    assert balance == {
+        "CustomTag": [{"amount": "abc", "currency": "USD", "account": "DU111"}]
+    }
