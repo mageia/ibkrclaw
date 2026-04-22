@@ -17,5 +17,10 @@ jobs:
         timeout-minutes: 1
       - run: python3 -m pytest tests/test_ibkr_trading.py -q
         timeout-minutes: 1
+      - run: python3 -m pytest tests/test_ibkr_rest_trading.py -q
+        timeout-minutes: 1
+      - run: python3 -m pytest tests/test_compare_ibkr_clients.py -q
+        timeout-minutes: 1
       - run: python3 -m py_compile scripts/ibkr_readonly.py scripts/keepalive.py
       - run: python3 -m py_compile scripts/ibkr_trading.py
+      - run: python3 -m py_compile scripts/ibkr_rest_trading.py scripts/compare_ibkr_clients.py
