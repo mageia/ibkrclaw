@@ -47,7 +47,7 @@ def test_skill_doc_targets_trading_script_and_keeps_runtime_env_keys():
     assert "先确认再执行" in content
     for env_key in [
         "IB_HOST=127.0.0.1",
-        "IB_PORT=4001",
+        "IB_PORT=4002",
         "IB_CLIENT_ID=1",
         "TG_BOT_TOKEN=",
         "TG_CHAT_ID=",
