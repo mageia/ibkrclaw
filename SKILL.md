@@ -11,28 +11,28 @@ description: Use when querying IBKR accounts, researching securities, or prepari
 
 通过 **IB Gateway**（桌面版）+ **ib_insync**（socket API）直连，替代了旧的 HTTP Gateway 方案。
 
-| 组件 | 说明 |
-|------|------|
+| 组件                      | 说明                                                    |
+| ------------------------- | ------------------------------------------------------- |
 | `scripts/ibkr_trading.py` | 主交易客户端，支持查询、下单、撤单、改单、订单/成交查询 |
-| `keepalive.py` | 健康检查脚本，断线时发 Telegram 通知 |
-| IB Gateway | IBKR 官方桌面应用，常驻后台，支持 Auto Restart |
-| ib_insync | Python socket API 客户端，负责连接、合约、订单与回报 |
+| `keepalive.py`            | 健康检查脚本，断线时发 Telegram 通知                    |
+| IB Gateway                | IBKR 官方桌面应用，常驻后台，支持 Auto Restart          |
+| ib_insync                 | Python socket API 客户端，负责连接、合约、订单与回报    |
 
 ## 功能
 
-| 功能 | 说明 |
-|------|------|
-| ✅ 查看持仓 | 显示股票/期权/期货持仓、成本、市值、盈亏 |
-| ✅ 查看余额 | 显示现金余额、净资产、账户汇总 |
-| ✅ 实时行情 | 查询任意标的的价格、买卖盘、成交量 |
-| ✅ 深度基本面 | 查询市值、P/E、EPS、股息收益、行业分类 |
-| ✅ 历史 K 线 | 获取过去 N 天/月/年的价格序列，用于趋势分析 |
-| ✅ 市场扫描 | 查询全市场涨幅榜、跌幅榜及异动榜 |
-| ✅ 新闻检索 | 获取 Yahoo Finance RSS 新闻并结合全网信息做分析 |
-| ✅ 下单 | 支持股票 / ETF / 期权 / 期货下单 |
-| ✅ 修改订单 | 支持按 order id 调整数量、限价、止损价等 |
-| ✅ 取消订单 | 支持按 order id 撤单 |
-| ✅ 订单 / 成交查询 | 支持查询未完成订单、订单列表、trade、fill |
+| 功能               | 说明                                            |
+| ------------------ | ----------------------------------------------- |
+| ✅ 查看持仓        | 显示股票/期权/期货持仓、成本、市值、盈亏        |
+| ✅ 查看余额        | 显示现金余额、净资产、账户汇总                  |
+| ✅ 实时行情        | 查询任意标的的价格、买卖盘、成交量              |
+| ✅ 深度基本面      | 查询市值、P/E、EPS、股息收益、行业分类          |
+| ✅ 历史 K 线       | 获取过去 N 天/月/年的价格序列，用于趋势分析     |
+| ✅ 市场扫描        | 查询全市场涨幅榜、跌幅榜及异动榜                |
+| ✅ 新闻检索        | 获取 Yahoo Finance RSS 新闻并结合全网信息做分析 |
+| ✅ 下单            | 支持股票 / ETF / 期权 / 期货下单                |
+| ✅ 修改订单        | 支持按 order id 调整数量、限价、止损价等        |
+| ✅ 取消订单        | 支持按 order id 撤单                            |
+| ✅ 订单 / 成交查询 | 支持查询未完成订单、订单列表、trade、fill       |
 
 ## 🤖 AI 助理执业规范 (Agent Execution Protocol)
 
@@ -109,6 +109,7 @@ https://www.interactivebrokers.com/en/trading/ibgateway-stable.php
 ### 3. 配置 IB Gateway API Settings
 
 在 IB Gateway 界面中：
+
 - ✅ **Enable ActiveX and Socket Clients**
 - ❌ **Read-Only API**（不要勾选，否则会阻止交易与部分查询能力）
 - Socket port：按你的部署环境设置（实盘常见 **4001**，模拟盘常见 **4002**）
@@ -118,9 +119,10 @@ https://www.interactivebrokers.com/en/trading/ibgateway-stable.php
 ### 4. 配置环境变量
 
 `~/trading/.env`：
+
 ```bash
 IB_HOST=127.0.0.1
-IB_PORT=4001
+IB_PORT=4002
 IB_CLIENT_ID=1
 TG_BOT_TOKEN=
 TG_CHAT_ID=
@@ -169,6 +171,7 @@ request = OrderRequest(
 ### 在 OpenClaw / Telegram 中使用
 
 直接对机器人说：
+
 - 查询类：
   - “我的 IBKR 持仓有哪些？”
   - “帮我查一下账户余额和当前未完成订单”
@@ -191,17 +194,18 @@ request = OrderRequest(
 
 ## 故障排查
 
-| 问题 | 解决方案 |
-|------|----------|
-| 连接失败 | 检查 IB Gateway 是否启动并登录，确认 `IB_HOST` / `IB_PORT` / `IB_CLIENT_ID` 与部署环境一致 |
-| 端口不通 | 检查 API Settings 中 Socket port、Trusted IP、Socket Clients |
-| 交易请求未执行 | 检查是否还停留在“先确认再执行”阶段，确认用户是否已明确确认 |
-| 撤单/改单失败 | 检查 order id 是否存在，以及目标订单是否仍处于可操作状态 |
-| 认证过期 | 重启 IB Gateway 并重新登录，确认 Auto Restart 设置正常 |
+| 问题           | 解决方案                                                                                   |
+| -------------- | ------------------------------------------------------------------------------------------ |
+| 连接失败       | 检查 IB Gateway 是否启动并登录，确认 `IB_HOST` / `IB_PORT` / `IB_CLIENT_ID` 与部署环境一致 |
+| 端口不通       | 检查 API Settings 中 Socket port、Trusted IP、Socket Clients                               |
+| 交易请求未执行 | 检查是否还停留在“先确认再执行”阶段，确认用户是否已明确确认                                 |
+| 撤单/改单失败  | 检查 order id 是否存在，以及目标订单是否仍处于可操作状态                                   |
+| 认证过期       | 重启 IB Gateway 并重新登录，确认 Auto Restart 设置正常                                     |
 
 ## 安全说明
 
 此技能**支持交易**，但执行规范必须满足：
+
 - 所有交易请求一律 **先确认再执行**
 - 默认连接目标由 `IB_HOST` / `IB_PORT` / `IB_CLIENT_ID` 决定，不在技能里硬编码 live/paper
 - 强烈建议先在 paper 环境验证策略、参数和流程

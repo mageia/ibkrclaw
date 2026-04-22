@@ -11,13 +11,22 @@ import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Callable, Dict, List, Optional
 
-from ib_insync import IB, Stock, Contract, ScannerSubscription, TagValue, Option, Future, Order
+from ib_insync import (
+    IB,
+    Contract,
+    Future,
+    Option,
+    Order,
+    ScannerSubscription,
+    Stock,
+    TagValue,
+)
 
 # Configuration
 IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
-IB_PORT = int(os.getenv("IB_PORT", "4001"))
+IB_PORT = int(os.getenv("IB_PORT", "4002"))
 IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "1"))
 MARKET_DATA_TYPE_DELAYED = 3
 RECONNECT_BASE_DELAY_SECONDS = 1
@@ -237,7 +246,9 @@ def build_order(request: OrderRequest) -> Order:
         raise ValueError("limit_price required for LMT order")
     if order_type == "STP" and request.stop_price is None:
         raise ValueError("stop_price required for STP order")
-    if order_type == "STP_LMT" and (request.stop_price is None or request.limit_price is None):
+    if order_type == "STP_LMT" and (
+        request.stop_price is None or request.limit_price is None
+    ):
         raise ValueError("stop_price and limit_price required for STP_LMT order")
 
     normalized_type = "STP LMT" if order_type == "STP_LMT" else order_type
@@ -296,8 +307,12 @@ def _order_snapshot_from_trade(trade: Any) -> OrderSnapshot:
 
     order_id = getattr(order, "orderId", None)
     perm_id = getattr(order, "permId", None)
-    action = _normalize_optional_text(getattr(order, "action", None) if order is not None else None)
-    total_quantity = getattr(order, "totalQuantity", None) if order is not None else None
+    action = _normalize_optional_text(
+        getattr(order, "action", None) if order is not None else None
+    )
+    total_quantity = (
+        getattr(order, "totalQuantity", None) if order is not None else None
+    )
     order_type = _normalize_order_type(
         getattr(order, "orderType", None) if order is not None else None
     )
@@ -312,12 +327,18 @@ def _order_snapshot_from_trade(trade: Any) -> OrderSnapshot:
         getattr(order_status, "status", None) if order_status is not None else None
     )
     filled = getattr(order_status, "filled", None) if order_status is not None else None
-    remaining = getattr(order_status, "remaining", None) if order_status is not None else None
+    remaining = (
+        getattr(order_status, "remaining", None) if order_status is not None else None
+    )
     avg_fill_price = (
-        getattr(order_status, "avgFillPrice", None) if order_status is not None else None
+        getattr(order_status, "avgFillPrice", None)
+        if order_status is not None
+        else None
     )
     last_fill_price = (
-        getattr(order_status, "lastFillPrice", None) if order_status is not None else None
+        getattr(order_status, "lastFillPrice", None)
+        if order_status is not None
+        else None
     )
     time_value = _normalize_optional_text(
         getattr(order_status, "time", None) if order_status is not None else None
@@ -373,13 +394,19 @@ def _order_snapshot_from_order(order: Any) -> OrderSnapshot:
 
     order_status = getattr(order, "orderStatus", None)
     status = _normalize_optional_text(
-        getattr(order_status, "status", None) if order_status is not None else getattr(order, "status", None)
+        getattr(order_status, "status", None)
+        if order_status is not None
+        else getattr(order, "status", None)
     )
     filled = (
-        getattr(order_status, "filled", None) if order_status is not None else getattr(order, "filled", None)
+        getattr(order_status, "filled", None)
+        if order_status is not None
+        else getattr(order, "filled", None)
     )
     remaining = (
-        getattr(order_status, "remaining", None) if order_status is not None else getattr(order, "remaining", None)
+        getattr(order_status, "remaining", None)
+        if order_status is not None
+        else getattr(order, "remaining", None)
     )
     avg_fill_price = (
         getattr(order_status, "avgFillPrice", None)
@@ -392,7 +419,9 @@ def _order_snapshot_from_order(order: Any) -> OrderSnapshot:
         else getattr(order, "lastFillPrice", None)
     )
     time_value = _normalize_optional_text(
-        getattr(order_status, "time", None) if order_status is not None else getattr(order, "time", None)
+        getattr(order_status, "time", None)
+        if order_status is not None
+        else getattr(order, "time", None)
     )
 
     return OrderSnapshot(
@@ -458,7 +487,9 @@ def _trade_like_from_item(item: Any) -> Any:
     contract = getattr(item, "contract", None)
     order_status = getattr(item, "orderStatus", None)
     fills = getattr(item, "fills", None) or []
-    return SimpleNamespace(order=order, contract=contract, orderStatus=order_status, fills=fills)
+    return SimpleNamespace(
+        order=order, contract=contract, orderStatus=order_status, fills=fills
+    )
 
 
 def _order_id_from_item(item: Any) -> Optional[int]:
@@ -504,7 +535,9 @@ def parse_account_summary_value(value: Any) -> Optional[float]:
         return None
 
 
-def get_primary_balance_amount(balance: Dict[str, List[Dict[str, Any]]], tag: str) -> float:
+def get_primary_balance_amount(
+    balance: Dict[str, List[Dict[str, Any]]], tag: str
+) -> float:
     """返回某个 tag 下第一个可解析为数字的余额"""
     entries = balance.get(tag, [])
     for entry in entries:
@@ -642,11 +675,15 @@ class IBKRTradingClient:
         for item in summary:
             entries = result.setdefault(item.tag, [])
             parsed_amount = parse_account_summary_value(item.value)
-            entries.append({
-                "amount": parsed_amount if parsed_amount is not None else item.value,
-                "currency": item.currency,
-                "account": getattr(item, "account", None),
-            })
+            entries.append(
+                {
+                    "amount": parsed_amount
+                    if parsed_amount is not None
+                    else item.value,
+                    "currency": item.currency,
+                    "account": getattr(item, "account", None),
+                }
+            )
         return result
 
     def search_symbol(
@@ -686,15 +723,17 @@ class IBKRTradingClient:
             cost_basis = avg_cost * quantity if quantity else 0
             pnl_percent = (unrealized_pnl / abs(cost_basis) * 100) if cost_basis else 0
 
-            positions.append(Position(
-                symbol=contract.localSymbol or contract.symbol,
-                conid=contract.conId,
-                quantity=quantity,
-                avg_cost=avg_cost,
-                market_value=market_value,
-                unrealized_pnl=unrealized_pnl,
-                pnl_percent=pnl_percent,
-            ))
+            positions.append(
+                Position(
+                    symbol=contract.localSymbol or contract.symbol,
+                    conid=contract.conId,
+                    quantity=quantity,
+                    avg_cost=avg_cost,
+                    market_value=market_value,
+                    unrealized_pnl=unrealized_pnl,
+                    pnl_percent=pnl_percent,
+                )
+            )
         return positions
 
     def get_quote(self, symbol: str) -> Optional[Quote]:
@@ -847,7 +886,9 @@ class IBKRTradingClient:
             log_warning(f"get_historical_data({symbol})", err)
             return []
 
-    def run_scanner(self, scan_type: str = "TOP_PERC_GAIN", size: int = 10) -> List[dict]:
+    def run_scanner(
+        self, scan_type: str = "TOP_PERC_GAIN", size: int = 10
+    ) -> List[dict]:
         """全市场智能扫描"""
         try:
             subscription = ScannerSubscription(
@@ -885,7 +926,9 @@ class IBKRTradingClient:
         url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
         headers = {"User-Agent": NEWS_USER_AGENT}
         try:
-            response = requests.get(url, headers=headers, timeout=NEWS_REQUEST_TIMEOUT_SECONDS)
+            response = requests.get(
+                url, headers=headers, timeout=NEWS_REQUEST_TIMEOUT_SECONDS
+            )
         except Exception as err:
             log_warning(f"get_company_news({symbol})", err)
             return []
@@ -917,7 +960,9 @@ class IBKRTradingClient:
         news: List[dict] = []
         for item in root.findall(".//item")[:limit]:
             title = item.find("title").text if item.find("title") is not None else ""
-            pub_date = item.find("pubDate").text if item.find("pubDate") is not None else ""
+            pub_date = (
+                item.find("pubDate").text if item.find("pubDate") is not None else ""
+            )
             link = item.find("link").text if item.find("link") is not None else ""
             news.append({"title": title, "date": pub_date, "link": link})
         return news
@@ -1001,7 +1046,9 @@ class IBKRTradingClient:
         return self.ib.fills()
 
     def get_open_orders(self) -> List[OrderSnapshot]:
-        return [_order_snapshot_from_item(order) for order in self.get_open_orders_raw()]
+        return [
+            _order_snapshot_from_item(order) for order in self.get_open_orders_raw()
+        ]
 
     def get_orders(self) -> List[OrderSnapshot]:
         return [_order_snapshot_from_item(order) for order in self.get_orders_raw()]

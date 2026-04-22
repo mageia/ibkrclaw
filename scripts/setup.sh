@@ -58,7 +58,7 @@ print_step "4/5" "生成 .env 模板"
 if [ ! -f "$ENV_FILE" ]; then
     cat > "$ENV_FILE" <<'ENVEOF'
 IB_HOST=127.0.0.1
-IB_PORT=4001
+IB_PORT=4002
 IB_CLIENT_ID=1
 TG_BOT_TOKEN=
 TG_CHAT_ID=
@@ -70,7 +70,7 @@ else
 fi
 
 print_step "5/5" "后续操作提示"
-echo "1) 启动并登录 IB Gateway（Socket port=4001, Trusted IP=127.0.0.1）"
+echo "1) 启动并登录 IB Gateway（Socket port=4002 Trusted IP=127.0.0.1）"
 echo "2) 编辑 $ENV_FILE，按需填写 TG_BOT_TOKEN / TG_CHAT_ID"
 echo "3) 测试连接：cd $TRADING_DIR && source venv/bin/activate && python ibkr_readonly.py"
 echo "4) 可选保活：cd $TRADING_DIR && source venv/bin/activate && python keepalive.py"

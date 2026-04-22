@@ -9,19 +9,18 @@ IBKR Read-Only Client - ib_insync 版本
 """
 
 import os
-import math
 import sys
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime
 from dataclasses import dataclass
-from typing import Any, Optional, List, Dict
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 from ib_insync import *
 
 # Configuration
 IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
-IB_PORT = int(os.getenv("IB_PORT", "4001"))
+IB_PORT = int(os.getenv("IB_PORT", "4002"))
 IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "1"))
 MARKET_DATA_TYPE_DELAYED = 3
 RECONNECT_BASE_DELAY_SECONDS = 1
@@ -89,7 +88,9 @@ def parse_account_summary_value(value: Any) -> Optional[float]:
         return None
 
 
-def get_primary_balance_amount(balance: Dict[str, List[Dict[str, Any]]], tag: str) -> float:
+def get_primary_balance_amount(
+    balance: Dict[str, List[Dict[str, Any]]], tag: str
+) -> float:
     """返回某个 tag 下第一个可解析为数字的余额"""
     entries = balance.get(tag, [])
     for entry in entries:
@@ -127,7 +128,9 @@ class IBKRReadOnlyClient:
     ⚠️ 安全说明：此类不包含任何下单、修改、取消订单的方法。
     """
 
-    def __init__(self, host: str = IB_HOST, port: int = IB_PORT, client_id: int = IB_CLIENT_ID):
+    def __init__(
+        self, host: str = IB_HOST, port: int = IB_PORT, client_id: int = IB_CLIENT_ID
+    ):
         self.host = host
         self.port = port
         self.client_id = client_id
@@ -136,6 +139,7 @@ class IBKRReadOnlyClient:
 
     def _setup_reconnect(self):
         """设置断线自动重连"""
+
         def on_disconnect():
             print(f"[{datetime.now():%H:%M:%S}] 开始自动重连")
             if self._reconnect_with_backoff():
@@ -194,11 +198,15 @@ class IBKRReadOnlyClient:
         for item in summary:
             entries = result.setdefault(item.tag, [])
             parsed_amount = parse_account_summary_value(item.value)
-            entries.append({
-                "amount": parsed_amount if parsed_amount is not None else item.value,
-                "currency": item.currency,
-                "account": getattr(item, "account", None),
-            })
+            entries.append(
+                {
+                    "amount": parsed_amount
+                    if parsed_amount is not None
+                    else item.value,
+                    "currency": item.currency,
+                    "account": getattr(item, "account", None),
+                }
+            )
         return result
 
     def get_positions(self) -> List[Position]:
@@ -215,15 +223,17 @@ class IBKRReadOnlyClient:
             cost_basis = avg_cost * quantity if quantity else 0
             pnl_pct = (unrealized_pnl / abs(cost_basis) * 100) if cost_basis else 0
 
-            positions.append(Position(
-                symbol=contract.localSymbol or contract.symbol,
-                conid=contract.conId,
-                quantity=quantity,
-                avg_cost=avg_cost,
-                market_value=mkt_value,
-                unrealized_pnl=unrealized_pnl,
-                pnl_percent=pnl_pct
-            ))
+            positions.append(
+                Position(
+                    symbol=contract.localSymbol or contract.symbol,
+                    conid=contract.conId,
+                    quantity=quantity,
+                    avg_cost=avg_cost,
+                    market_value=mkt_value,
+                    unrealized_pnl=unrealized_pnl,
+                    pnl_percent=pnl_pct,
+                )
+            )
         return positions
 
     def search_symbol(
@@ -258,6 +268,7 @@ class IBKRReadOnlyClient:
         def safe(val, default=0):
             """处理 NaN 和 None"""
             import math
+
             if val is None or (isinstance(val, float) and math.isnan(val)):
                 return default
             return val
@@ -280,7 +291,7 @@ class IBKRReadOnlyClient:
                 ask=ask,
                 volume=int(volume),
                 change=round(change, 2),
-                change_pct=round(change_pct, 2)
+                change_pct=round(change_pct, 2),
             )
         except Exception as e:
             print(f"❌ 获取行情失败: {e}")
@@ -292,7 +303,7 @@ class IBKRReadOnlyClient:
         if not contract:
             return None
 
-        company_name = contract.description if hasattr(contract, 'description') else ""
+        company_name = contract.description if hasattr(contract, "description") else ""
         industry = ""
         category = ""
         market_cap = "N/A"
@@ -305,39 +316,39 @@ class IBKRReadOnlyClient:
 
         # 尝试获取 fundamental data XML
         try:
-            xml_data = self.ib.reqFundamentalData(contract, 'ReportSnapshot')
+            xml_data = self.ib.reqFundamentalData(contract, "ReportSnapshot")
             if xml_data:
                 root = ET.fromstring(xml_data)
                 # 解析公司信息
-                co_info = root.find('.//CoIDs')
+                co_info = root.find(".//CoIDs")
                 if co_info is not None:
-                    name_el = root.find('.//CoGeneralInfo/CoName')
+                    name_el = root.find(".//CoGeneralInfo/CoName")
                     if name_el is not None:
                         company_name = name_el.text
 
                 # 解析行业
-                ind_el = root.find('.//Industry')
+                ind_el = root.find(".//Industry")
                 if ind_el is not None:
-                    industry = ind_el.get('type', '')
-                    category = ind_el.text or ''
+                    industry = ind_el.get("type", "")
+                    category = ind_el.text or ""
 
                 # 解析财务指标
-                for ratio in root.findall('.//Ratio'):
-                    field_name = ratio.get('FieldName', '')
-                    value = ratio.text or 'N/A'
-                    if field_name == 'MKTCAP':
+                for ratio in root.findall(".//Ratio"):
+                    field_name = ratio.get("FieldName", "")
+                    value = ratio.text or "N/A"
+                    if field_name == "MKTCAP":
                         market_cap = value
-                    elif field_name == 'PEEXCLXOR':
+                    elif field_name == "PEEXCLXOR":
                         pe_ratio = value
-                    elif field_name == 'TTMEPSXCLX':
+                    elif field_name == "TTMEPSXCLX":
                         eps = value
-                    elif field_name == 'YIELD':
+                    elif field_name == "YIELD":
                         dividend_yield = value
-                    elif field_name == 'NHIG':
+                    elif field_name == "NHIG":
                         high_52w = value
-                    elif field_name == 'NLOW':
+                    elif field_name == "NLOW":
                         low_52w = value
-                    elif field_name == 'APTS10DAVG' or field_name == 'VOL10DAVG':
+                    elif field_name == "APTS10DAVG" or field_name == "VOL10DAVG":
                         avg_volume = value
         except Exception as err:
             log_warning(f"get_fundamentals({symbol})", err)
@@ -345,9 +356,9 @@ class IBKRReadOnlyClient:
         # 如果 fundamental data 不可用，用 ticker 数据补充
         try:
             [ticker] = self.ib.reqTickers(contract)
-            if high_52w == "N/A" and hasattr(ticker, 'high') and ticker.high:
+            if high_52w == "N/A" and hasattr(ticker, "high") and ticker.high:
                 high_52w = str(ticker.high)
-            if low_52w == "N/A" and hasattr(ticker, 'low') and ticker.low:
+            if low_52w == "N/A" and hasattr(ticker, "low") and ticker.low:
                 low_52w = str(ticker.low)
         except Exception as err:
             log_warning(f"get_fundamentals({symbol}) ticker fallback", err)
@@ -364,10 +375,12 @@ class IBKRReadOnlyClient:
             dividend_yield=dividend_yield,
             high_52w=high_52w,
             low_52w=low_52w,
-            avg_volume=avg_volume
+            avg_volume=avg_volume,
         )
 
-    def get_historical_data(self, symbol: str, duration: str = "3 M", bar_size: str = "1 day") -> List[dict]:
+    def get_historical_data(
+        self, symbol: str, duration: str = "3 M", bar_size: str = "1 day"
+    ) -> List[dict]:
         """
         获取历史 K 线数据
         duration: "1 D", "1 W", "1 M", "3 M", "6 M", "1 Y", "5 Y"
@@ -380,11 +393,11 @@ class IBKRReadOnlyClient:
         try:
             bars = self.ib.reqHistoricalData(
                 contract,
-                endDateTime='',
+                endDateTime="",
                 durationStr=duration,
                 barSizeSetting=bar_size,
-                whatToShow='TRADES',
-                useRTH=True
+                whatToShow="TRADES",
+                useRTH=True,
             )
             return [
                 {
@@ -393,7 +406,7 @@ class IBKRReadOnlyClient:
                     "high": bar.high,
                     "low": bar.low,
                     "close": bar.close,
-                    "volume": bar.volume
+                    "volume": bar.volume,
                 }
                 for bar in bars
             ]
@@ -401,23 +414,25 @@ class IBKRReadOnlyClient:
             print(f"❌ 获取历史数据失败: {e}")
             return []
 
-    def run_scanner(self, scan_type: str = "TOP_PERC_GAIN", size: int = 10) -> List[dict]:
+    def run_scanner(
+        self, scan_type: str = "TOP_PERC_GAIN", size: int = 10
+    ) -> List[dict]:
         """
         全市场智能扫描
         scan_type: TOP_PERC_GAIN, TOP_PERC_LOSE, MOST_ACTIVE, HIGH_VS_13W_HL
         """
         try:
             sub = ScannerSubscription(
-                instrument='STK',
-                locationCode='STK.US.MAJOR',
+                instrument="STK",
+                locationCode="STK.US.MAJOR",
                 scanCode=scan_type,
-                numberOfRows=size
+                numberOfRows=size,
             )
             # 过滤微盘股
-            tag_values = [
-                TagValue('marketCapAbove', '100000000')
-            ]
-            results = self.ib.reqScannerData(sub, scannerSubscriptionFilterOptions=tag_values)
+            tag_values = [TagValue("marketCapAbove", "100000000")]
+            results = self.ib.reqScannerData(
+                sub, scannerSubscriptionFilterOptions=tag_values
+            )
             return [
                 {
                     "rank": r.rank,
@@ -425,7 +440,7 @@ class IBKRReadOnlyClient:
                     "conid": r.contractDetails.contract.conId,
                     "distance": r.distance,
                     "benchmark": r.benchmark,
-                    "projection": r.projection
+                    "projection": r.projection,
                 }
                 for r in results
             ]
@@ -439,6 +454,7 @@ class IBKRReadOnlyClient:
         IBKR News API 需要额外订阅，暂用免费源。
         """
         import requests
+
         url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
         headers = {"User-Agent": "Mozilla/5.0"}
         try:
@@ -448,7 +464,10 @@ class IBKRReadOnlyClient:
             return []
 
         if r.status_code != 200:
-            log_warning(f"get_company_news({symbol})", RuntimeError(f"unexpected status {r.status_code}"))
+            log_warning(
+                f"get_company_news({symbol})",
+                RuntimeError(f"unexpected status {r.status_code}"),
+            )
             return []
 
         try:
@@ -460,7 +479,9 @@ class IBKRReadOnlyClient:
         news = []
         for item in root.findall(".//item")[:limit]:
             title = item.find("title").text if item.find("title") is not None else ""
-            pubDate = item.find("pubDate").text if item.find("pubDate") is not None else ""
+            pubDate = (
+                item.find("pubDate").text if item.find("pubDate") is not None else ""
+            )
             link = item.find("link").text if item.find("link") is not None else ""
             news.append({"title": title, "date": pubDate, "link": link})
         return news
@@ -517,7 +538,7 @@ def main():
         print("❌ 无法连接 IB Gateway。请确保：")
         print("   1. IB Gateway 已启动并登录")
         print("   2. API Settings 中已启用 Socket Clients")
-        print(f"   3. 端口 {IB_PORT} 正确 (live=4001, paper=4002)")
+        print(f"   3. 端口 {IB_PORT} 正确 (live=4002, paper=4002)")
         return
 
     print(f"✅ 已连接 IB Gateway ({client.host}:{client.port})")
@@ -547,14 +568,18 @@ def main():
     else:
         for p in positions:
             pnl = format_pnl(p.unrealized_pnl, p.pnl_percent)
-            print(f"   {p.symbol}: {p.quantity}股 @ {format_currency(p.avg_cost)} → 市值{format_currency(p.market_value)} {pnl}")
+            print(
+                f"   {p.symbol}: {p.quantity}股 @ {format_currency(p.avg_cost)} → 市值{format_currency(p.market_value)} {pnl}"
+            )
     print("-" * 50)
 
     # 行情测试
     print("🔍 测试获取 AAPL 行情...")
     quote = client.get_quote("AAPL")
     if quote:
-        print(f"🍎 AAPL: ${quote.last_price:.2f} ({quote.change_pct:+.2f}%) | Bid: ${quote.bid:.2f} Ask: ${quote.ask:.2f}")
+        print(
+            f"🍎 AAPL: ${quote.last_price:.2f} ({quote.change_pct:+.2f}%) | Bid: ${quote.bid:.2f} Ask: ${quote.ask:.2f}"
+        )
     else:
         print("❌ 获取行情失败")
 
@@ -563,7 +588,7 @@ def main():
     news = client.get_company_news("LMND")
     if news:
         for idx, item in enumerate(news):
-            print(f"  {idx+1}. [{item['date']}] {item['title']}")
+            print(f"  {idx + 1}. [{item['date']}] {item['title']}")
     else:
         print("无最新新闻或获取失败。")
 
