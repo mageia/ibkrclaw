@@ -162,3 +162,48 @@ def test_check_api_readiness_returns_false_when_api_check_times_out(capfd):
     captured = capfd.readouterr()
     assert "API readiness check failed" in captured.out
     assert "timed out" in captured.out
+
+
+def test_check_gateway_process_matches_known_process_names(monkeypatch):
+    calls = []
+
+    class FakeResult:
+        def __init__(self, returncode):
+            self.returncode = returncode
+
+    def fake_run(args, capture_output, text, timeout):
+        calls.append(args)
+        pattern = args[-1]
+        if pattern == "Trader Workstation":
+            return FakeResult(0)
+        return FakeResult(1)
+
+    monkeypatch.setattr(keepalive.subprocess, "run", fake_run)
+
+    assert keepalive.check_gateway_process() is True
+    assert calls == [
+        ["pgrep", "-f", "ibgateway"],
+        ["pgrep", "-f", "Trader Workstation"],
+    ]
+
+
+def test_check_gateway_process_returns_false_when_no_patterns_match(monkeypatch):
+    calls = []
+
+    class FakeResult:
+        def __init__(self, returncode):
+            self.returncode = returncode
+
+    def fake_run(args, capture_output, text, timeout):
+        calls.append(args[-1])
+        return FakeResult(1)
+
+    monkeypatch.setattr(keepalive.subprocess, "run", fake_run)
+
+    assert keepalive.check_gateway_process() is False
+    assert calls == [
+        "ibgateway",
+        "Trader Workstation",
+        "Trader",
+        "JavaApplicationStub",
+    ]

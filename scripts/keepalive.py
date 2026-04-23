@@ -9,23 +9,26 @@ Crontab entry:
 """
 
 import os
-import sys
 import signal
 import socket
 import subprocess
-from importlib import util
 from contextlib import contextmanager
 from datetime import datetime
+from importlib import util
 from pathlib import Path
 
 # IB Gateway 配置
 IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
 IB_PORT = int(os.getenv("IB_PORT", "4002"))
 DEFAULT_KEEPALIVE_CLIENT_ID = 91
-KEEPALIVE_CLIENT_ID = int(os.getenv("KEEPALIVE_CLIENT_ID", str(DEFAULT_KEEPALIVE_CLIENT_ID)))
+KEEPALIVE_CLIENT_ID = int(
+    os.getenv("KEEPALIVE_CLIENT_ID", str(DEFAULT_KEEPALIVE_CLIENT_ID))
+)
 DEFAULT_API_READINESS_TIMEOUT_SECONDS = 8.0
 API_READINESS_TIMEOUT_SECONDS = float(
-    os.getenv("KEEPALIVE_API_TIMEOUT_SECONDS", str(DEFAULT_API_READINESS_TIMEOUT_SECONDS))
+    os.getenv(
+        "KEEPALIVE_API_TIMEOUT_SECONDS", str(DEFAULT_API_READINESS_TIMEOUT_SECONDS)
+    )
 )
 
 # Telegram 通知配置（可选）
@@ -34,6 +37,12 @@ TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")
 
 # 状态文件，避免重复通知
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".gw_state")
+GATEWAY_PROCESS_PATTERNS = [
+    "ibgateway",
+    "Trader Workstation",
+    "Trader",
+    "JavaApplicationStub",
+]
 
 
 def log(msg):
@@ -42,13 +51,15 @@ def log(msg):
 
 
 def check_gateway_process() -> bool:
-    """检查 IB Gateway 进程是否存在"""
+    """检查 IB Gateway / TWS 相关进程是否存在"""
     try:
-        result = subprocess.run(
-            ["pgrep", "-f", "ibgateway"],
-            capture_output=True, text=True, timeout=5
-        )
-        return result.returncode == 0
+        for pattern in GATEWAY_PROCESS_PATTERNS:
+            result = subprocess.run(
+                ["pgrep", "-f", pattern], capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                return True
+        return False
     except Exception:
         return False
 
@@ -74,7 +85,9 @@ def build_readonly_client():
 
     module = util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.IBKRReadOnlyClient(host=IB_HOST, port=IB_PORT, client_id=KEEPALIVE_CLIENT_ID)
+    return module.IBKRReadOnlyClient(
+        host=IB_HOST, port=IB_PORT, client_id=KEEPALIVE_CLIENT_ID
+    )
 
 
 @contextmanager
@@ -96,7 +109,9 @@ def api_readiness_timeout(timeout_seconds: float):
         signal.signal(signal.SIGALRM, previous_handler)
 
 
-def check_api_readiness(client_factory=None, timeout_seconds: float = API_READINESS_TIMEOUT_SECONDS) -> bool:
+def check_api_readiness(
+    client_factory=None, timeout_seconds: float = API_READINESS_TIMEOUT_SECONDS
+) -> bool:
     """检查 API 可用性：连接并执行一次轻量查询"""
     if client_factory is None:
         client_factory = build_readonly_client
@@ -167,12 +182,13 @@ def send_telegram(message: str):
         return
     try:
         import requests
+
         url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
-        requests.post(url, json={
-            "chat_id": TG_CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML"
-        }, timeout=10)
+        requests.post(
+            url,
+            json={"chat_id": TG_CHAT_ID, "text": message, "parse_mode": "HTML"},
+            timeout=10,
+        )
     except Exception as e:
         log(f"⚠️ Telegram 通知发送失败: {e}")
 
