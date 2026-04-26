@@ -99,6 +99,16 @@ def test_ci_workflow_installs_requirements_and_runs_verification():
         assert fragment in workflow_text, f"{fragment} 未出现在 CI 工作流"
 
 
+def test_ci_workflow_runs_ibeam_tests_and_compiles_ibeam_script():
+    workflow_text = "\n".join(_normalized_lines(".github/workflows/python-tests.yml"))
+    expected_fragments = [
+        "python3 -m pytest tests/test_ibkr_ibeam.py -q",
+        "python3 -m py_compile scripts/ibkr_ibeam.py",
+    ]
+    for fragment in expected_fragments:
+        assert fragment in workflow_text, f"{fragment} 未出现在 CI 工作流"
+
+
 def test_ci_workflow_runs_rest_tests_and_compiles_rest_scripts():
     workflow_text = "\n".join(_normalized_lines(".github/workflows/python-tests.yml"))
     expected_fragments = [

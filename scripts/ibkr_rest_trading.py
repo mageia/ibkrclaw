@@ -11,8 +11,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import requests
 
-
-DEFAULT_BASE_URL = os.getenv("IBKR_REST_BASE_URL", "https://localhost:5000/v1/api")
+DEFAULT_BASE_URL = os.getenv("IBKR_REST_BASE_URL", "https://192.168.3.222:5000/v1/api")
 DEFAULT_TIMEOUT_SECONDS = float(os.getenv("IBKR_REST_TIMEOUT_SECONDS", "10"))
 DEFAULT_VERIFY_SSL = os.getenv("IBKR_REST_VERIFY_SSL", "false").lower() in {
     "1",
@@ -57,7 +56,14 @@ ORDER_TYPE_FROM_REST = {
     "STOP_LIMIT": "STP_LMT",
     "STP LMT": "STP_LMT",
 }
-CONFIRMATION_MESSAGE_KEYS = ("message", "messages", "warning", "warnings", "warn", "question")
+CONFIRMATION_MESSAGE_KEYS = (
+    "message",
+    "messages",
+    "warning",
+    "warnings",
+    "warn",
+    "question",
+)
 
 
 def log_warning(context: str, error: Exception) -> None:
@@ -242,7 +248,9 @@ class IBKRRESTTradingClient:
 
     def connect(self) -> bool:
         status = self._request_json("GET", "/iserver/auth/status")
-        authenticated = bool(status.get("authenticated")) if isinstance(status, dict) else False
+        authenticated = (
+            bool(status.get("authenticated")) if isinstance(status, dict) else False
+        )
         self._authenticated = authenticated
         if not authenticated:
             return False
@@ -271,7 +279,9 @@ class IBKRRESTTradingClient:
                 normalized_accounts.append(normalized_entry)
         return normalized_accounts
 
-    def get_balance(self, account_id: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
+    def get_balance(
+        self, account_id: Optional[str] = None
+    ) -> Dict[str, List[Dict[str, Any]]]:
         resolved_account_id = self._require_account_id(account_id)
         summary = self._request_json("GET", f"/portfolio/{resolved_account_id}/summary")
         self._request_json("GET", f"/portfolio/{resolved_account_id}/ledger")
@@ -290,7 +300,9 @@ class IBKRRESTTradingClient:
             parsed_amount = self._parse_numeric(raw_amount)
             entries.append(
                 {
-                    "amount": parsed_amount if parsed_amount is not None else raw_amount,
+                    "amount": parsed_amount
+                    if parsed_amount is not None
+                    else raw_amount,
                     "currency": row.get("currency"),
                     "account": row.get("account", resolved_account_id),
                 }
@@ -317,12 +329,16 @@ class IBKRRESTTradingClient:
                     continue
                 quantity = float(row.get("position", 0) or 0)
                 avg_cost = float(row.get("avgCost", 0) or 0)
-                market_value = float(row.get("mktValue", row.get("marketValue", 0)) or 0)
+                market_value = float(
+                    row.get("mktValue", row.get("marketValue", 0)) or 0
+                )
                 unrealized_pnl = float(
                     row.get("unrealizedPnl", row.get("unrealizedPNL", 0)) or 0
                 )
                 cost_basis = avg_cost * quantity
-                pnl_percent = (unrealized_pnl / abs(cost_basis) * 100) if cost_basis else 0.0
+                pnl_percent = (
+                    (unrealized_pnl / abs(cost_basis) * 100) if cost_basis else 0.0
+                )
 
                 positions.append(
                     Position(
@@ -479,7 +495,9 @@ class IBKRRESTTradingClient:
             raise ValueError("limit_price required for LMT order")
         if order_type == "STP" and request.stop_price is None:
             raise ValueError("stop_price required for STP order")
-        if order_type == "STP_LMT" and (request.limit_price is None or request.stop_price is None):
+        if order_type == "STP_LMT" and (
+            request.limit_price is None or request.stop_price is None
+        ):
             raise ValueError("stop_price and limit_price required for STP_LMT order")
 
         payload: Dict[str, Any] = {
@@ -508,12 +526,16 @@ class IBKRRESTTradingClient:
         )
         order_type = ORDER_TYPE_FROM_REST.get(order_type_raw or "", order_type_raw)
         return OrderSnapshot(
-            order_id=self._parse_int(item.get("orderId", item.get("order_id", item.get("id")))),
+            order_id=self._parse_int(
+                item.get("orderId", item.get("order_id", item.get("id")))
+            ),
             perm_id=self._parse_int(item.get("permId", item.get("perm_id"))),
             symbol=self._normalize_optional_text(
                 item.get("ticker", item.get("symbol", item.get("localSymbol")))
             ),
-            sec_type=self._normalize_optional_text(item.get("secType", item.get("sec_type"))),
+            sec_type=self._normalize_optional_text(
+                item.get("secType", item.get("sec_type"))
+            ),
             action=self._normalize_optional_text(item.get("side", item.get("action"))),
             order_type=order_type,
             total_quantity=self._parse_numeric(
@@ -525,7 +547,9 @@ class IBKRRESTTradingClient:
             stop_price=self._parse_numeric(
                 item.get("auxPrice", item.get("stopPrice", item.get("stop_price")))
             ),
-            status=self._normalize_optional_text(item.get("status", item.get("orderStatus"))),
+            status=self._normalize_optional_text(
+                item.get("status", item.get("orderStatus"))
+            ),
             filled=self._parse_numeric(
                 item.get("filledQuantity", item.get("filled", item.get("filled_qty")))
             ),
@@ -561,7 +585,9 @@ class IBKRRESTTradingClient:
         )
 
     def _trade_snapshot_from_rest(self, item: Dict[str, Any]) -> TradeSnapshot:
-        execution_rows = item.get("execution", item.get("executions", item.get("fills", [])))
+        execution_rows = item.get(
+            "execution", item.get("executions", item.get("fills", []))
+        )
         if isinstance(execution_rows, dict):
             execution_rows = [execution_rows]
         fills = [
@@ -655,7 +681,9 @@ class IBKRRESTTradingClient:
         return FundamentalData(
             conid=conid,
             symbol=symbol,
-            company_name=str(details.get("companyName") or contract.get("companyName") or symbol),
+            company_name=str(
+                details.get("companyName") or contract.get("companyName") or symbol
+            ),
             industry=str(details.get("industry") or ""),
             category=str(details.get("sectorGroup") or details.get("category") or ""),
             market_cap="N/A",
@@ -667,7 +695,9 @@ class IBKRRESTTradingClient:
             avg_volume=str(market_row.get("7282") or "N/A"),
         )
 
-    def run_scanner(self, scan_type: str = "TOP_PERC_GAIN", size: int = 10) -> List[dict]:
+    def run_scanner(
+        self, scan_type: str = "TOP_PERC_GAIN", size: int = 10
+    ) -> List[dict]:
         payload = {
             "instrument": SCANNER_INSTRUMENT,
             "type": scan_type,
@@ -694,7 +724,9 @@ class IBKRRESTTradingClient:
         url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
         headers = {"User-Agent": NEWS_USER_AGENT}
         try:
-            response = requests.get(url, headers=headers, timeout=NEWS_REQUEST_TIMEOUT_SECONDS)
+            response = requests.get(
+                url, headers=headers, timeout=NEWS_REQUEST_TIMEOUT_SECONDS
+            )
         except Exception as err:
             log_warning(f"get_company_news({symbol})", err)
             return []
@@ -725,7 +757,9 @@ class IBKRRESTTradingClient:
         news: List[dict] = []
         for item in root.findall(".//item")[:limit]:
             title = item.find("title").text if item.find("title") is not None else ""
-            pub_date = item.find("pubDate").text if item.find("pubDate") is not None else ""
+            pub_date = (
+                item.find("pubDate").text if item.find("pubDate") is not None else ""
+            )
             link = item.find("link").text if item.find("link") is not None else ""
             news.append({"title": title, "date": pub_date, "link": link})
         return news
@@ -759,7 +793,9 @@ class IBKRRESTTradingClient:
             )
         return self._trade_snapshot_from_rest(self._first_payload_item(result))
 
-    def cancel_order(self, order_id: int, account_id: Optional[str] = None) -> Dict[str, Any]:
+    def cancel_order(
+        self, order_id: int, account_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         resolved_account_id = self._require_account_id(account_id)
         payload = self._request_json(
             "DELETE",

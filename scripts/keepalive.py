@@ -38,9 +38,10 @@ TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")
 # 状态文件，避免重复通知
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".gw_state")
 GATEWAY_PROCESS_PATTERNS = [
+    "IB Gateway",
+    "IbcGateway",
     "ibgateway",
     "Trader Workstation",
-    "Trader",
     "JavaApplicationStub",
 ]
 
@@ -51,17 +52,25 @@ def log(msg):
 
 
 def check_gateway_process() -> bool:
-    """检查 IB Gateway / TWS 相关进程是否存在"""
+    """检查 IB Gateway / TWS 相关进程是否存在（大小写不敏感）"""
     try:
         for pattern in GATEWAY_PROCESS_PATTERNS:
             result = subprocess.run(
-                ["pgrep", "-f", pattern], capture_output=True, text=True, timeout=5
+                ["pgrep", "-i", "-f", pattern],
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
-            if result.returncode == 0:
+            if result.returncode == 0 and result.stdout.strip():
                 return True
         return False
     except Exception:
         return False
+
+
+def infer_process_presence_from_socket(socket_ok: bool) -> bool:
+    """如果目标端口已经在监听，可视为 Gateway 进程存在。"""
+    return socket_ok
 
 
 def check_socket_connection() -> bool:
@@ -209,9 +218,10 @@ def write_state(state: str):
 
 
 def main():
-    process_ok = check_gateway_process()
-    socket_ok = check_socket_connection() if process_ok else False
-    api_ok = check_api_readiness() if process_ok and socket_ok else False
+    process_detected = check_gateway_process()
+    socket_ok = check_socket_connection()
+    process_ok = process_detected or infer_process_presence_from_socket(socket_ok)
+    api_ok = check_api_readiness() if socket_ok else False
     last_state = read_state()
     current_state = evaluate_gateway_status(process_ok, socket_ok, api_ok)
 
